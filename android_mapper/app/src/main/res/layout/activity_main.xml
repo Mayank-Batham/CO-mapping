@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_slate"
+    tools:context=".MainActivity">
+
+    <!-- WebView Component -->
+    <WebView
+        android:id="@+id/webView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <!-- Animated Loading/Discovery Overlay -->
+    <LinearLayout
+        android:id="@+id/loadingOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/bg_slate"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="24dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="📊"
+            android:textSize="64sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="CIA Mapper"
+            android:textColor="@color/text_dark"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:text="Searching for laptop server on network..."
+            android:textColor="@color/text_muted"
+            android:textSize="15sp" />
+
+        <ProgressBar
+            android:id="@+id/progressBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="200dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:indeterminate="true"
+            android:progressTint="@color/primary" />
+    </LinearLayout>
+
+    <!-- Error/Failure Overlay -->
+    <LinearLayout
+        android:id="@+id/errorOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/bg_slate"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="⚠️"
+            android:textSize="64sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Connection Failed"
+            android:textColor="@color/text_dark"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:text="Could not reach the server. Please check your internet connection or verify the Streamlit Server URL."
+            android:textColor="@color/text_muted"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnRetry"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:backgroundTint="@color/primary"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
+                android:text="Retry"
+                android:textColor="@color/white"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnResetServer"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:text="Configure URL"
+                android:textColor="@color/primary"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                app:strokeColor="@color/primary" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Dynamic URL Setup/Configuration Overlay -->
+    <LinearLayout
+        android:id="@+id/urlConfigOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/bg_slate"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="24dp"
+            android:layout_marginEnd="24dp"
+            app:cardBackgroundColor="@color/white"
+            app:cardCornerRadius="16dp"
+            app:cardElevation="8dp"
+            app:strokeWidth="0dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="28dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:text="🌐"
+                    android:textSize="56sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:layout_marginTop="16dp"
+                    android:text="Streamlit Cloud Setup"
+                    android:textColor="@color/text_dark"
+                    android:textSize="22sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center"
+                    android:text="Enter your public Streamlit Community Cloud URL to access the CIA Marks Mapper."
+                    android:textColor="@color/text_muted"
+                    android:textSize="13sp" />
+
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/textInputLayout"
+                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:hint="Streamlit Server URL"
+                    app:boxStrokeColor="@color/primary"
+                    app:hintTextColor="@color/primary">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/etServerUrl"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="textUri"
+                        android:maxLines="1"
+                        android:singleLine="true"
+                        android:text="https://" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <Button
+                    android:id="@+id/btnConnect"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:backgroundTint="@color/primary"
+                    android:padding="12dp"
+                    android:text="Connect Server"
+                    android:textColor="@color/white"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:layout_marginTop="16dp"
+                    android:text="— OR —"
+                    android:textColor="@color/text_muted"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/btnScanLocal"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:padding="12dp"
+                    android:text="Developer: Scan Local Wi-Fi"
+                    android:textColor="@color/text_muted"
+                    android:textSize="13sp"
+                    app:strokeColor="@color/text_muted" />
+
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
