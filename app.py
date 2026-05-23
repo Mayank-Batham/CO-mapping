@@ -473,13 +473,76 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
             if sheet_ces.cell(row=11, column=col).value is None:
                 sheet_ces.cell(row=11, column=col).value = 0
 
-    # 13. Prevent division by zero in CO_PO_PSO_MAPPING sheet by initializing empty mapping cells to 0
+    # 13. Prevent division by zero and fill CO-PO-PSO mapping matrix based on Course Code
     if 'CO_PO_PSO_MAPPING' in wb.sheetnames:
         sheet_cppm = wb['CO_PO_PSO_MAPPING']
-        for r in range(4, 15):
-            for c in range(4, 19): # D to R
-                if sheet_cppm.cell(row=r, column=c).value is None:
-                    sheet_cppm.cell(row=r, column=c).value = 0
+        
+        # Default initialization: fill all cells in CO1-CO10 (D4:R13) with 0 to prevent division by zero
+        for r in range(4, 14):
+            for c in range(4, 19): # Columns D to R
+                sheet_cppm.cell(row=r, column=c).value = 0
+
+        # Attempt to automatically load mapping based on course code
+        if metadata and metadata.get('course_code'):
+            target_code = re.sub(r'[^a-zA-Z0-9]', '', str(metadata['course_code'])).upper()
+            
+            import os
+            src_mapping_file = None
+            for f_name in os.listdir('.'):
+                if 'CO-PO' in f_name and 'MAPPING' in f_name and f_name.endswith('.xlsx'):
+                    src_mapping_file = f_name
+                    break
+            if not src_mapping_file and os.path.exists('2021-CO-PO -PSO-MAPPING.xlsx'):
+                src_mapping_file = '2021-CO-PO -PSO-MAPPING.xlsx'
+                
+            if src_mapping_file:
+                try:
+                    src_df = pd.read_excel(src_mapping_file, engine='openpyxl')
+                    
+                    # Normalize Course Code column values to search for target_code
+                    match_idx = None
+                    for idx, val in enumerate(src_df['Course Code'].values):
+                        if pd.notna(val):
+                            norm_val = re.sub(r'[^a-zA-Z0-9]', '', str(val)).upper()
+                            if norm_val == target_code:
+                                match_idx = idx
+                                break
+                                
+                    if match_idx is not None:
+                        # Collect sequential rows belonging to this course
+                        co_rows = []
+                        for idx in range(match_idx, len(src_df)):
+                            if idx > match_idx and pd.notna(src_df.iloc[idx]['Course Code']):
+                                break
+                            co_rows.append(src_df.iloc[idx])
+                            
+                        # Extract header columns mapping (e.g. 'PO1' -> Col 4)
+                        header_cols = {}
+                        for col in range(4, 19): # D to R
+                            header_val = sheet_cppm.cell(row=3, column=col).value
+                            if header_val:
+                                header_cols[str(header_val).strip()] = col
+                                
+                        # Write the mapped values into the template
+                        for co_idx, co_row in enumerate(co_rows):
+                            target_row = 4 + co_idx # CO1 -> Row 4, CO2 -> Row 5...
+                            if target_row > 13: # Limit to CO10
+                                break
+                                
+                            for col_name, col_idx in header_cols.items():
+                                if col_name in co_row:
+                                    val = co_row[col_name]
+                                    if pd.notna(val) and str(val).strip() != '':
+                                        try:
+                                            sheet_cppm.cell(row=target_row, column=col_idx).value = float(val)
+                                        except ValueError:
+                                            sheet_cppm.cell(row=target_row, column=col_idx).value = str(val)
+                                    else:
+                                        # Leave unmapped cells in active rows as empty/None or 0
+                                        sheet_cppm.cell(row=target_row, column=col_idx).value = None
+                except Exception as e:
+                    # Log mapping warnings gracefully to Streamlit
+                    st.warning(f"Note: Could not automatically map CO-PO weights from '{src_mapping_file}': {e}")
                 
     out_stream = io.BytesIO()
     wb.save(out_stream)
