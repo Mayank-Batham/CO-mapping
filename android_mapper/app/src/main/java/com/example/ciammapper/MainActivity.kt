@@ -33,6 +33,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var errorOverlay: LinearLayout
     private lateinit var btnRetry: Button
     private lateinit var btnResetServer: Button
+    private lateinit var tvErrorDetails: TextView
 
     // Dynamic Server Setup Views
     private lateinit var urlConfigOverlay: LinearLayout
@@ -83,6 +84,7 @@ class MainActivity : AppCompatActivity() {
         errorOverlay = findViewById(R.id.errorOverlay)
         btnRetry = findViewById(R.id.btnRetry)
         btnResetServer = findViewById(R.id.btnResetServer)
+        tvErrorDetails = findViewById(R.id.tvErrorDetails)
 
         urlConfigOverlay = findViewById(R.id.urlConfigOverlay)
         etServerUrl = findViewById(R.id.etServerUrl)
@@ -115,10 +117,16 @@ class MainActivity : AppCompatActivity() {
         val settings = webView.settings
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
+        settings.databaseEnabled = true
         settings.allowFileAccess = true
         settings.allowContentAccess = true
         settings.useWideViewPort = true
         settings.loadWithOverviewMode = true
+
+        // Configure full cookie manager (essential for Streamlit Cloud sessions and Auth0 cookies)
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.setAcceptCookie(true)
+        cookieManager.setAcceptThirdPartyCookies(webView, true)
         
         // Handle client behavior
         webView.webViewClient = object : WebViewClient() {
@@ -137,8 +145,20 @@ class MainActivity : AppCompatActivity() {
                 super.onReceivedError(view, request, error)
                 // Only show connection error screen if the main webpage loading fails
                 if (request?.isForMainFrame == true) {
-                    showErrorState()
+                    val errorDesc = error?.description?.toString() ?: "Unknown network error"
+                    val errorCode = error?.errorCode ?: 0
+                    showErrorState("$errorDesc (Code: $errorCode)")
                 }
+            }
+
+            override fun onReceivedSslError(
+                view: WebView?,
+                handler: SslErrorHandler?,
+                error: android.net.http.SslError?
+            ) {
+                // If there's an SSL certificate error (e.g. self-signed, invalid host, out-of-sync clock)
+                val sslErrorDesc = error?.toString() ?: "SSL Handshake Error"
+                showErrorState("SSL Certificate Mismatch: $sslErrorDesc")
             }
         }
 
@@ -301,7 +321,7 @@ class MainActivity : AppCompatActivity() {
                     statusText.text = "Emulator gateway found! Connecting..."
                     webView.loadUrl(emulatorUrl)
                 } else {
-                    showErrorState()
+                    showErrorState("Local network subnet scan completed. No active laptop server detected on port 8501.")
                 }
             }
         }
@@ -376,15 +396,16 @@ class MainActivity : AppCompatActivity() {
             if (found) {
                 webView.loadUrl(url)
             } else {
-                showErrorState()
+                showErrorState("Local emulator server not responding on port 8501.")
             }
         }
     }
 
-    private fun showErrorState() {
+    private fun showErrorState(errorDescription: String) {
         loadingOverlay.visibility = View.GONE
         errorOverlay.visibility = View.VISIBLE
         webView.visibility = View.GONE
+        tvErrorDetails.text = "Details: $errorDescription\n\nPlease check your internet connection or verify the Streamlit Server URL."
     }
 
     override fun onBackPressed() {
