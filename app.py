@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import docx
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 import io
 import re
 
@@ -430,6 +431,13 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
                         if q_num in col_mappings:
                             col = col_mappings[q_num]
                             sheet.cell(row=r, column=col).value = mark
+
+        # 8.5 Set maximum marks to 10 for A part of every question (Q1A to Q8A)
+        # to eliminate division by zero errors in summaries!
+        for q_num, col in col_mappings.items():
+            sheet.cell(row=14, column=col).value = 10.0
+            col_letter = get_column_letter(col)
+            sheet.cell(row=15, column=col).value = f"=PRODUCT({col_letter}14,0.65)"
                             
     # 9. Map Quiz Marks (Column 101)
     if quiz_file:
@@ -452,6 +460,26 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
             usn_val = sheet.cell(row=r, column=2).value
             if usn_val in aat_marks:
                 sheet.cell(row=r, column=100).value = aat_marks[usn_val]
+
+    # 11. Prevent division by zero in Final SEE Grade (Col 108/DD) by filling active student rows with "NA"
+    for i in range(num_students):
+        r = 17 + i
+        sheet.cell(row=r, column=108).value = "NA"
+
+    # 12. Prevent division by zero in CES survey sheet by initializing row 11 with 0
+    if 'CES' in wb.sheetnames:
+        sheet_ces = wb['CES']
+        for col in range(4, 14): # D to M
+            if sheet_ces.cell(row=11, column=col).value is None:
+                sheet_ces.cell(row=11, column=col).value = 0
+
+    # 13. Prevent division by zero in CO_PO_PSO_MAPPING sheet by initializing empty mapping cells to 0
+    if 'CO_PO_PSO_MAPPING' in wb.sheetnames:
+        sheet_cppm = wb['CO_PO_PSO_MAPPING']
+        for r in range(4, 15):
+            for c in range(4, 19): # D to R
+                if sheet_cppm.cell(row=r, column=c).value is None:
+                    sheet_cppm.cell(row=r, column=c).value = 0
                 
     out_stream = io.BytesIO()
     wb.save(out_stream)
