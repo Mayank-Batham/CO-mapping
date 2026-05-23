@@ -116,7 +116,7 @@ def extract_cos_from_docx(file_stream):
         for i, row in enumerate(table.rows):
             cells = [cell.text.strip() for cell in row.cells]
             if not cells: continue
-            if 'Question No.' in cells[0]:
+            if 'Question No.' in cells[0] and q_row_idx is None:
                 q_row_idx = i
             if 'Course Outcome' in cells[0] or 'Course outcome' in cells[0]:
                 co_row_idx = i
@@ -125,7 +125,10 @@ def extract_cos_from_docx(file_stream):
             co_cells = [c.text.strip() for c in table.rows[co_row_idx].cells]
             for q, co in zip(q_cells[1:], co_cells[1:]):
                 if q and q.isdigit():
-                    co_mapping[int(q)] = co.replace("CO", "").strip()
+                    q_num = int(q)
+                    co_val = co.replace("CO", "").strip()
+                    if co_val: # Only map if the CO is not empty
+                        co_mapping[q_num] = co_val
     return co_mapping
 
 def extract_marks_from_xls(file_stream):
