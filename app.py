@@ -7,9 +7,15 @@ import io
 import re
 import os
 
-# Load environment variables manually from .env file
+# Load environment variables manually from .env file (check CWD first, fallback to script dir)
 if os.path.exists('.env'):
-    with open('.env', 'r') as f:
+    env_path = '.env'
+else:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    env_path = os.path.join(script_dir, '.env')
+
+if os.path.exists(env_path):
+    with open(env_path, 'r') as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith('#'):
@@ -569,17 +575,31 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
             target_core = m_target.group(1) if m_target else target_code
             
             import os
+            script_dir = os.path.dirname(os.path.abspath(__file__))
             src_mapping_file = None
-            for f_name in os.listdir('.'):
-                f_upper = f_name.upper()
-                if 'CO' in f_upper and 'PO' in f_upper and 'MAPPING' in f_upper:
-                    if f_upper.endswith('.XLSX') or f_upper.endswith('.XLS'):
-                        src_mapping_file = f_name
-                        break
+            
+            # Check current working directory first, then script directory
+            for search_dir in ['.', script_dir]:
+                try:
+                    for f_name in os.listdir(search_dir):
+                        f_upper = f_name.upper()
+                        if 'CO' in f_upper and 'PO' in f_upper and 'MAPPING' in f_upper:
+                            if f_upper.endswith('.XLSX') or f_upper.endswith('.XLS'):
+                                src_mapping_file = os.path.join(search_dir, f_name)
+                                break
+                except:
+                    pass
+                if src_mapping_file:
+                    break
+                    
             if not src_mapping_file:
-                for fallback in ['2021-CO-PO -PSO-MAPPING.xlsx', '2021 CO PO PSO MAPPING.xls', '2021-CO-PO-PSO-MAPPING.xlsx', '2021-CO-PO-PSO-MAPPING.xls']:
-                    if os.path.exists(fallback):
-                        src_mapping_file = fallback
+                for search_dir in ['.', script_dir]:
+                    for fallback in ['2021-CO-PO -PSO-MAPPING.xlsx', '2021 CO PO PSO MAPPING.xls', '2021-CO-PO-PSO-MAPPING.xlsx', '2021-CO-PO-PSO-MAPPING.xls']:
+                        fallback_path = os.path.join(search_dir, fallback)
+                        if os.path.exists(fallback_path):
+                            src_mapping_file = fallback_path
+                            break
+                    if src_mapping_file:
                         break
                 
             if src_mapping_file:
@@ -889,17 +909,31 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
             target_core = m_target.group(1) if m_target else target_code
             
             import os
+            script_dir = os.path.dirname(os.path.abspath(__file__))
             src_mapping_file = None
-            for f_name in os.listdir('.'):
-                f_upper = f_name.upper()
-                if 'CO' in f_upper and 'PO' in f_upper and 'MAPPING' in f_upper:
-                    if f_upper.endswith('.XLSX') or f_upper.endswith('.XLS'):
-                        src_mapping_file = f_name
-                        break
+            
+            # Check current working directory first, then script directory
+            for search_dir in ['.', script_dir]:
+                try:
+                    for f_name in os.listdir(search_dir):
+                        f_upper = f_name.upper()
+                        if 'CO' in f_upper and 'PO' in f_upper and 'MAPPING' in f_upper:
+                            if f_upper.endswith('.XLSX') or f_upper.endswith('.XLS'):
+                                src_mapping_file = os.path.join(search_dir, f_name)
+                                break
+                except:
+                    pass
+                if src_mapping_file:
+                    break
+                    
             if not src_mapping_file:
-                for fallback in ['2021-CO-PO -PSO-MAPPING.xlsx', '2021 CO PO PSO MAPPING.xls', '2021-CO-PO-PSO-MAPPING.xlsx', '2021-CO-PO-PSO-MAPPING.xls']:
-                    if os.path.exists(fallback):
-                        src_mapping_file = fallback
+                for search_dir in ['.', script_dir]:
+                    for fallback in ['2021-CO-PO -PSO-MAPPING.xlsx', '2021 CO PO PSO MAPPING.xls', '2021-CO-PO-PSO-MAPPING.xlsx', '2021-CO-PO-PSO-MAPPING.xls']:
+                        fallback_path = os.path.join(search_dir, fallback)
+                        if os.path.exists(fallback_path):
+                            src_mapping_file = fallback_path
+                            break
+                    if src_mapping_file:
                         break
                 
             if src_mapping_file:
