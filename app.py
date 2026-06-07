@@ -844,7 +844,16 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
 
     try:
         # Try different models in fallback order to handle regional or API key restrictions
-        models_to_try = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-2.0-flash']
+        models_to_try = [
+            'gemini-2.5-flash',
+            'gemini-1.5-flash', 
+            'gemini-1.5-flash-latest', 
+            'gemini-1.5-flash-8b', 
+            'gemini-1.5-flash-8b-latest',
+            'gemini-1.5-pro', 
+            'gemini-2.0-flash',
+            'gemini-2.0-flash-lite'
+        ]
         working_model_name = None
         last_err = None
         
