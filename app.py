@@ -7,21 +7,25 @@ import io
 import re
 import os
 
-# Load environment variables manually from .env file (check CWD first, fallback to script dir)
-if os.path.exists('.env'):
-    env_path = '.env'
-else:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    env_path = os.path.join(script_dir, '.env')
+# Load environment variables manually from .env file
+script_dir = os.path.dirname(os.path.abspath(__file__))
+script_env = os.path.join(script_dir, '.env')
+cwd_env = '.env'
 
-if os.path.exists(env_path):
-    with open(env_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#'):
-                if '=' in line:
-                    key, value = line.split('=', 1)
-                    os.environ[key.strip()] = value.strip()
+def load_env_file(path):
+    if os.path.exists(path):
+        with open(path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        os.environ[key.strip()] = value.strip()
+
+# Load project script directory .env first, then let CWD override if it differs
+load_env_file(script_env)
+if os.path.abspath(cwd_env) != os.path.abspath(script_env):
+    load_env_file(cwd_env)
 
 
 st.set_page_config(
@@ -731,88 +735,19 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
         if course_code:
             sheet_theory.cell(row=5, column=1).value = f"COURSE  CODE : {course_code}"
         
-    # 2. Extract Master Student Roster from Lab sheet (Rows 9 to 79+)
-    master_students = {}
-    student_rows = {}
-    
-    for r in range(9, 1000):
-        usn_val = sheet.cell(row=r, column=2).value
-        name_val = sheet.cell(row=r, column=3).value
-        
-        if usn_val is None or str(usn_val).strip() == "":
-            is_empty = True
-            for offset in range(1, 5):
-                next_val = sheet.cell(row=r + offset, column=2).value
-                if next_val is not None and str(next_val).strip() != "":
-                    is_empty = False
-                    break
-            if is_empty:
-                break
-            else:
-                continue
-                
-        usn = str(usn_val).strip()
-        name = str(name_val).strip() if name_val else ""
-        if usn and usn.lower() not in ('nan', 'none', '') and usn.isalnum():
-            master_students[usn] = name
-            student_rows[usn] = r
-            
-    sorted_usns = sorted(master_students.keys())
-    num_students = len(sorted_usns)
-    
-    if num_students == 0:
-        raise ValueError("No students found in the Lab sheet template.")
-        
-    # 3. Synchronize Student Roster to Theory sheet (Rows 17 to 85)
-    # This is critical so that formulas in other sheets (which look up USNs/Names from Theory) resolve!
-    if 'Theory' in wb.sheetnames:
-        sheet_theory = wb['Theory']
-        for i in range(85 - 17 + 1):
-            r = 17 + i
-            if i < num_students:
-                usn = sorted_usns[i]
-                sheet_theory.cell(row=r, column=1).value = float(i + 1)
-                sheet_theory.cell(row=r, column=2).value = usn
-                sheet_theory.cell(row=r, column=3).value = master_students[usn]
-            else:
-                for c in range(1, 123):
-                    sheet_theory.cell(row=r, column=c).value = None
-
-    # Clear student marks columns in Theory (columns D to CW, rows 17 to 17 + N - 1)
-    # since it's a stand alone lab course.
-    if 'Theory' in wb.sheetnames:
-        sheet_theory = wb['Theory']
-        for r in range(17, 17 + num_students):
-            for c in range(4, 102):
-                sheet_theory.cell(row=r, column=c).value = None
-
-    # 4. Fill COs and POs mapped in Lab sheet
-    # Row 4 is POs Mapped, Row 5 is COs mapped. Columns D to O (4 to 15)
-    for idx in range(12):
-        col = 4 + idx
-        if idx < len(po_vals) and po_vals[idx]:
-            sheet.cell(row=4, column=col).value = po_vals[idx]
-        if idx < len(co_vals) and co_vals[idx] is not None:
-            sheet.cell(row=5, column=col).value = co_vals[idx]
-
-    # Clear marks in student rows of Lab (columns D to O, rows 9 to 9 + N - 1) before filling
-    for r in range(9, 9 + num_students):
-        for c in range(4, 16):
-            sheet.cell(row=r, column=c).value = None
-
-    # 5. Convert PDF pages to PNG images in memory
+    # 2. Convert PDF pages to JPEG images in memory to optimize payload size
     images = []
     try:
         doc = fitz.open(stream=rubrics_file.read(), filetype="pdf")
         for page in doc:
             pix = page.get_pixmap(dpi=150)
-            img_bytes = pix.tobytes("png")
+            img_bytes = pix.tobytes("jpg")
             images.append(img_bytes)
         doc.close()
     except Exception as e:
         raise ValueError(f"Failed to convert PDF to images: {e}")
 
-    # 6. Configure Gemini API and extract marks
+    # 3. Configure Gemini API and extract marks
     if api_key:
         genai.configure(api_key=api_key)
     else:
@@ -820,13 +755,27 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
         
     prompt = """
     Analyze these scanned lab rubrics sheets containing handwritten student marks.
-    Find the Course Code (e.g. 22AIL55, 21AIL35, etc.) printed at the top of the sheets.
-    For each student, extract their USN (University Seat Number), Student Name, and the marks scored in each lab experiment (Lab 1 to Lab 12).
-    The PDF contains handwritten numbers inside grid cells corresponding to lab marks.
-    The sheets might list students page-by-page for each lab, or contain a consolidated table.
+    The PDF contains four distinct tables, each spanning exactly two pages (total 8 pages).
+    - Table 1: Pages 1 and 2
+    - Table 2: Pages 3 and 4
+    - Table 3: Pages 5 and 6
+    - Table 4: Pages 7 and 8
     
-    Extract and compile the total marks scored by each student for each of the 12 labs.
-    If a student was absent or has no marks for a specific lab, use null for that lab mark.
+    Each table may be split horizontally (meaning the same students appear on both pages of the table, with columns/experiments split across pages) or vertically (different students on each page).
+    Your task is to extract and compile a consolidated profile for each student. Match students by their USN and Name across pages of the same table if they are split horizontally to get their full set of 12 marks.
+    
+    For each student, extract:
+    1. USN (University Seat Number)
+    2. Student Name
+    3. The marks scored in each lab experiment (Lab 1 to Lab 12).
+    
+    CRITICAL INSTRUCTION FOR MARKS:
+    - Under each lab experiment column (Lab 1 to Lab 12), there are multiple sub-columns (e.g. Performance, Viva, Total).
+    - The ONLY score you should extract is the one under the sub-column labeled "T(30)" (Total out of 30) or simply "T".
+    - Do NOT extract viva, write-up, or performance scores. Only extract the total mark under the "T(30)" or "T" column.
+    - If a student was absent or has no marks for a specific lab, use null for that lab mark.
+    
+    Find the Course Code (e.g. 22AIL55, 21AIL35, etc.) printed at the top of the sheets.
     
     Return a structured JSON output with the following format:
     {
@@ -842,42 +791,88 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
     Make sure to match each student's marks correctly to their USN.
     """
 
+    # Strict OpenAPI schema for Gemini VLM response format
+    rubrics_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "course_code": {
+                "type": "STRING",
+                "description": "The course code printed at the top of the sheets, e.g. 21AIL35"
+            },
+            "students": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "usn": {
+                            "type": "STRING",
+                            "description": "University Seat Number (USN)"
+                        },
+                        "name": {
+                            "type": "STRING",
+                            "description": "Student Name"
+                        },
+                        "marks": {
+                            "type": "ARRAY",
+                            "items": {
+                                "type": "NUMBER",
+                                "nullable": True
+                            },
+                            "description": "Array of exactly 12 marks corresponding to Lab 1 through Lab 12. Use null if absent."
+                        }
+                    },
+                    "required": ["usn", "name", "marks"]
+                }
+            }
+        },
+        "required": ["course_code", "students"]
+    }
+
+    # Try models in order of preference
+    models_to_try = [
+        'gemini-2.5-flash',
+        'gemini-1.5-flash',
+        'gemini-1.5-flash-8b',
+        'gemini-2.0-flash',
+        'gemini-1.5-pro',
+        'gemini-2.0-flash-lite'
+    ]
+    
     try:
-        # Try different models in fallback order to handle regional or API key restrictions
-        models_to_try = [
-            'gemini-2.5-flash',
-            'gemini-1.5-flash', 
-            'gemini-1.5-flash-latest', 
-            'gemini-1.5-flash-8b', 
-            'gemini-1.5-flash-8b-latest',
-            'gemini-1.5-pro', 
-            'gemini-2.0-flash',
-            'gemini-2.0-flash-lite'
-        ]
-        working_model_name = None
-        last_err = None
+        available_models = [m.name.split('/')[-1] for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        models_to_try = [m for m in models_to_try if m in available_models] or models_to_try
+    except Exception as list_err:
+        pass
+
+    response = None
+    last_error = None
+
+    try:
+        pil_images = [Image.open(io.BytesIO(img_bytes)) for img_bytes in images]
         
         for model_name in models_to_try:
             try:
-                test_model = genai.GenerativeModel(model_name)
-                # Quick lightweight test call to verify access and availability
-                test_model.generate_content("test")
-                working_model_name = model_name
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(
+                    [prompt, *pil_images],
+                    generation_config={
+                        "response_mime_type": "application/json",
+                        "response_schema": rubrics_schema
+                    }
+                )
+                # Success! Break the loop
                 break
-            except Exception as e:
-                last_err = e
-                
-        if not working_model_name:
-            raise ValueError(f"Could not find any supported Gemini model. Last error: {last_err}")
+            except Exception as model_err:
+                last_error = model_err
+                err_msg = str(model_err).lower()
+                if "429" in err_msg or "quota" in err_msg or "rate limit" in err_msg or "exhausted" in err_msg:
+                    st.warning(f"⚠️ {model_name} quota exceeded or rate-limited. Retrying automatically with alternative model...")
+                else:
+                    st.warning(f"⚠️ {model_name} call failed: {model_err}. Retrying with alternative model...")
+        
+        if response is None:
+            raise ValueError(f"All attempted models failed. Last error: {last_error}")
             
-        model = genai.GenerativeModel(working_model_name)
-        pil_images = [Image.open(io.BytesIO(img_bytes)) for img_bytes in images]
-        
-        response = model.generate_content(
-            [prompt, *pil_images],
-            generation_config={"response_mime_type": "application/json"}
-        )
-        
         data = json.loads(response.text)
         extracted_students = data.get("students", [])
         extracted_course_code = data.get("course_code", "")
@@ -889,29 +884,85 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
     except Exception as e:
         raise ValueError(f"Gemini VLM API Call failed: {e}")
 
-    # 7. Write Extracted Marks to Lab Sheet (columns D to O)
+    # 4. Build Student Roster from VLM Extraction
+    master_students = {}
+    extracted_marks_map = {}
     for est in extracted_students:
         usn = str(est.get("usn", "")).strip()
+        name = str(est.get("name", "")).strip()
         marks = est.get("marks", [])
+        if usn and usn.lower() not in ('nan', 'none', '') and usn.isalnum():
+            master_students[usn] = name
+            extracted_marks_map[usn] = marks
+            
+    sorted_usns = sorted(master_students.keys())
+    num_students = len(sorted_usns)
+    
+    if num_students == 0:
+        raise ValueError("No students extracted from the scanned rubrics PDF.")
+
+    # 5. Populate and Synchronize Roster to Lab sheet (Rows 9+) and Theory sheet (Rows 17 to 85)
+    for i in range(num_students):
+        usn = sorted_usns[i]
+        name = master_students[usn]
         
-        # Fuzzy match USN
-        match_usn = None
-        for r_usn in student_rows.keys():
-            if re.sub(r'[^a-zA-Z0-9]', '', r_usn).upper() == re.sub(r'[^a-zA-Z0-9]', '', usn).upper():
-                match_usn = r_usn
-                break
-                
-        if match_usn:
-            r = student_rows[match_usn]
-            for idx in range(12):
-                col = 4 + idx
-                if idx < len(marks):
-                    val = marks[idx]
-                    if val is not None and val != "":
-                        try:
-                            sheet.cell(row=r, column=col).value = float(val)
-                        except ValueError:
-                            pass
+        # Write to Lab sheet
+        r_lab = 9 + i
+        sheet.cell(row=r_lab, column=1).value = float(i + 1)
+        sheet.cell(row=r_lab, column=2).value = usn
+        sheet.cell(row=r_lab, column=3).value = name
+        
+        # Write to Theory sheet
+        if 'Theory' in wb.sheetnames:
+            sheet_theory = wb['Theory']
+            r_theo = 17 + i
+            sheet_theory.cell(row=r_theo, column=1).value = float(i + 1)
+            sheet_theory.cell(row=r_theo, column=2).value = usn
+            sheet_theory.cell(row=r_theo, column=3).value = name
+
+    # Clear unused roster rows in Theory sheet (Rows 17 + N to 85)
+    if 'Theory' in wb.sheetnames:
+        sheet_theory = wb['Theory']
+        for i in range(num_students, 85 - 17 + 1):
+            r_theo = 17 + i
+            for c in range(1, 123):
+                sheet_theory.cell(row=r_theo, column=c).value = None
+
+    # Clear student marks columns in Theory (columns D to CW, rows 17 to 17 + N - 1)
+    if 'Theory' in wb.sheetnames:
+        sheet_theory = wb['Theory']
+        for r in range(17, 17 + num_students):
+            for c in range(4, 102):
+                sheet_theory.cell(row=r, column=c).value = None
+
+    # 6. Fill COs and POs mapped in Lab sheet
+    # Row 4 is POs Mapped, Row 5 is COs mapped. Columns D to O (4 to 15)
+    for idx in range(12):
+        col = 4 + idx
+        if idx < len(po_vals) and po_vals[idx]:
+            sheet.cell(row=4, column=col).value = po_vals[idx]
+        if idx < len(co_vals) and co_vals[idx] is not None:
+            sheet.cell(row=5, column=col).value = co_vals[idx]
+
+    # Clear marks columns in Lab sheet (columns D to O, rows 9 to 9 + N - 1) before filling
+    for r in range(9, 9 + num_students):
+        for c in range(4, 16):
+            sheet.cell(row=r, column=c).value = None
+
+    # 7. Write Extracted Marks to Lab Sheet (columns D to O)
+    for i in range(num_students):
+        usn = sorted_usns[i]
+        marks = extracted_marks_map[usn]
+        r_lab = 9 + i
+        for idx in range(12):
+            col = 4 + idx
+            if idx < len(marks):
+                val = marks[idx]
+                if val is not None and val != "":
+                    try:
+                        sheet.cell(row=r_lab, column=col).value = float(val)
+                    except ValueError:
+                        pass
 
     # 8. Prevent division by zero in other sheets by initializing unmapped values
     if 'CES' in wb.sheetnames:
