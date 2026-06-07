@@ -3,3 +3,5 @@ pandas
 openpyxl
 python-docx
 xlrd
+pymupdf
+google-generativeai
