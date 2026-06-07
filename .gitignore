@@ -149,3 +149,5 @@ Thumbs.db
 *.xls
 *.docx
 *.pdf
+# Allow committing the mapping matrix database
+!2021-CO-PO -PSO-MAPPING.xlsx
