@@ -843,7 +843,25 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
     """
 
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Try different models in fallback order to handle regional or API key restrictions
+        models_to_try = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-2.0-flash']
+        working_model_name = None
+        last_err = None
+        
+        for model_name in models_to_try:
+            try:
+                test_model = genai.GenerativeModel(model_name)
+                # Quick lightweight test call to verify access and availability
+                test_model.generate_content("test")
+                working_model_name = model_name
+                break
+            except Exception as e:
+                last_err = e
+                
+        if not working_model_name:
+            raise ValueError(f"Could not find any supported Gemini model. Last error: {last_err}")
+            
+        model = genai.GenerativeModel(working_model_name)
         pil_images = [Image.open(io.BytesIO(img_bytes)) for img_bytes in images]
         
         response = model.generate_content(
