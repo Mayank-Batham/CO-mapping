@@ -5,6 +5,18 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 import io
 import re
+import os
+
+# Load environment variables manually from .env file
+if os.path.exists('.env'):
+    with open('.env', 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key.strip()] = value.strip()
+
 
 st.set_page_config(
     page_title="CIA Marks & CO Mapper",
@@ -106,29 +118,60 @@ st.markdown("""
 
 # ----------------- PARSING HELPER FUNCTIONS -----------------
 
+def parse_xls_header(header_str):
+    """Parses header strings like '7 (A)', '7 (B)', '7a', '1.0' into (q_num, part)."""
+    header_str = str(header_str).strip()
+    # Check for formats like "7 (A)", "7 (a)", "7A", "7a", "7 ( A )"
+    m = re.match(r'^(\d+)\s*\(?\s*([a-zA-Z])\s*\)?', header_str)
+    if m:
+        q_num = int(m.group(1))
+        part = m.group(2).lower()
+        return q_num, part
+    # Check for plain digit
+    m = re.match(r'^(\d+)(?:\.0)?$', header_str)
+    if m:
+        q_num = int(m.group(1))
+        return q_num, 'a'
+    return None, None
+
 def extract_cos_from_docx(file_stream):
     """Parses a DOCX file and extracts Course Outcome mappings."""
     document = docx.Document(file_stream)
-    co_mapping = {} # Q -> CO
+    co_mapping = {} # (q_num, part) -> CO
     for table in document.tables:
         q_row_idx = None
+        part_row_idx = None
         co_row_idx = None
         for i, row in enumerate(table.rows):
             cells = [cell.text.strip() for cell in row.cells]
             if not cells: continue
-            if 'Question No.' in cells[0] and q_row_idx is None:
-                q_row_idx = i
+            if 'Question No.' in cells[0]:
+                if q_row_idx is None:
+                    q_row_idx = i
+                elif part_row_idx is None:
+                    part_row_idx = i
             if 'Course Outcome' in cells[0] or 'Course outcome' in cells[0]:
                 co_row_idx = i
         if q_row_idx is not None and co_row_idx is not None:
             q_cells = [c.text.strip() for c in table.rows[q_row_idx].cells]
+            if part_row_idx is not None:
+                part_cells = [c.text.strip() for c in table.rows[part_row_idx].cells]
+            else:
+                part_cells = [""] * len(q_cells)
             co_cells = [c.text.strip() for c in table.rows[co_row_idx].cells]
-            for q, co in zip(q_cells[1:], co_cells[1:]):
+            for idx in range(1, len(q_cells)):
+                q = q_cells[idx]
+                part_str = part_cells[idx].lower().strip() if idx < len(part_cells) else ""
+                co = co_cells[idx].strip() if idx < len(co_cells) else ""
+                if part_str not in ('a', 'b', 'c', 'd'):
+                    part = 'a'
+                else:
+                    part = part_str
                 if q and q.isdigit():
                     q_num = int(q)
                     co_val = co.replace("CO", "").strip()
                     if co_val: # Only map if the CO is not empty
-                        co_mapping[q_num] = co_val
+                        co_mapping[(q_num, part)] = co_val
     return co_mapping
 
 def extract_marks_from_xls(file_stream):
@@ -149,14 +192,15 @@ def extract_marks_from_xls(file_stream):
     if header_row_idx is None: 
         return {}
     
-    headers = [str(x).strip().replace('.0', '') for x in df.iloc[header_row_idx].values]
+    headers = [str(x).strip() for x in df.iloc[header_row_idx].values]
     
-    q_cols = {} # mapped question int -> col id
+    q_cols = {} # mapped (q_num, part) -> col id
     for col_idx, h in enumerate(headers):
-        if h.isdigit():
-            q_cols[int(h)] = col_idx
+        q_num, part = parse_xls_header(h)
+        if q_num is not None:
+            q_cols[(q_num, part)] = col_idx
             
-    marks_data = {} # USN -> {q_num: mark}
+    marks_data = {} # USN -> {(q_num, part): mark}
     for idx in range(header_row_idx + 1, len(df)):
         row = df.iloc[idx]
         usn = str(row.iloc[usn_col]).strip()
@@ -164,13 +208,13 @@ def extract_marks_from_xls(file_stream):
             continue
         
         st_marks = {}
-        for q_num, col_idx in q_cols.items():
+        for (q_num, part), col_idx in q_cols.items():
             mark = row.iloc[col_idx]
             if pd.isna(mark) or str(mark).strip() in ['-', '', 'nan', 'A', 'None']:
                 pass
             else:
                 try:
-                    st_marks[q_num] = float(mark)
+                    st_marks[(q_num, part)] = float(mark)
                 except ValueError:
                     pass
         marks_data[usn] = st_marks
@@ -406,19 +450,25 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
         marks = marks_files.get(test_idx)
         col_mappings = tests_col_map[test_idx]
         
+        # Clear Row 12, 14, and 15 for CIA columns first to prevent old values
+        for col_idx in col_mappings.values():
+            for offset in range(4):
+                sheet.cell(row=12, column=col_idx + offset).value = None
+                sheet.cell(row=14, column=col_idx + offset).value = None
+                sheet.cell(row=15, column=col_idx + offset).value = None
+        
         # CO Mappings
         if qp:
             qp.seek(0)
             co_map = extract_cos_from_docx(qp)
             qp.seek(0)
-            for col in col_mappings.values():
-                for offset in range(4):
-                    sheet.cell(row=12, column=col + offset).value = None
             
-            for q_num, co_val in co_map.items():
+            part_offsets = {'a': 0, 'b': 1, 'c': 2, 'd': 3}
+            for (q_num, part), co_val in co_map.items():
                 if q_num in col_mappings:
-                    col = col_mappings[q_num]
-                    sheet.cell(row=12, column=col).value = f"0,{co_val}"
+                    col_start = col_mappings[q_num]
+                    target_col = col_start + part_offsets.get(part, 0)
+                    sheet.cell(row=12, column=target_col).value = f"0,{co_val}"
                     
         # Marks Mappings
         if marks:
@@ -426,21 +476,46 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
             st_marks = extract_marks_from_xls(marks)
             marks.seek(0)
             
+            part_offsets = {'a': 0, 'b': 1, 'c': 2, 'd': 3}
             for i in range(num_students):
                 r = 17 + i
                 usn_val = sheet.cell(row=r, column=2).value
                 if usn_val in st_marks:
-                    for q_num, mark in st_marks[usn_val].items():
+                    for (q_num, part), mark in st_marks[usn_val].items():
                         if q_num in col_mappings:
-                            col = col_mappings[q_num]
-                            sheet.cell(row=r, column=col).value = mark
+                            col_start = col_mappings[q_num]
+                            target_col = col_start + part_offsets.get(part, 0)
+                            sheet.cell(row=r, column=target_col).value = mark
 
-        # 8.5 Set maximum marks to 10 for A part of every question (Q1A to Q8A)
+        # Set maximum marks and thresholds automatically based on part B activity
         # to eliminate division by zero errors in summaries!
-        for q_num, col in col_mappings.items():
-            sheet.cell(row=14, column=col).value = 10.0
-            col_letter = get_column_letter(col)
-            sheet.cell(row=15, column=col).value = f"=PRODUCT({col_letter}14,0.65)"
+        part_offsets = {'a': 0, 'b': 1, 'c': 2, 'd': 3}
+        for q_num in range(1, 9):
+            col_a = col_mappings[q_num]
+            col_b = col_mappings[q_num] + 1
+            
+            # Check if part B is active (has marks mapped or CO mapped)
+            part_b_active = False
+            for i in range(num_students):
+                r = 17 + i
+                if sheet.cell(row=r, column=col_b).value is not None:
+                    part_b_active = True
+                    break
+            if sheet.cell(row=12, column=col_b).value is not None:
+                part_b_active = True
+                
+            if part_b_active:
+                sheet.cell(row=14, column=col_a).value = 5.0
+                sheet.cell(row=14, column=col_b).value = 5.0
+                col_a_let = get_column_letter(col_a)
+                col_b_let = get_column_letter(col_b)
+                sheet.cell(row=15, column=col_a).value = f"=PRODUCT({col_a_let}14,0.65)"
+                sheet.cell(row=15, column=col_b).value = f"=PRODUCT({col_b_let}14,0.65)"
+            else:
+                # Default to 10 marks for standard non-split questions
+                sheet.cell(row=14, column=col_a).value = 10.0
+                col_a_let = get_column_letter(col_a)
+                sheet.cell(row=15, column=col_a).value = f"=PRODUCT({col_a_let}14,0.65)"
                             
     # 9. Map Quiz Marks (Column 101)
     if quiz_file:
@@ -551,29 +626,243 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
     wb.save(out_stream)
     return out_stream.getvalue()
 
+def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_vals):
+    """Fills the Stand Alone Lab sheet cleanly and handles dynamic rosters."""
+    import google.generativeai as genai
+    import fitz  # PyMuPDF
+    from PIL import Image
+    import io
+    import json
+    
+    wb = load_workbook(io.BytesIO(template_file.read()))
+    sheet = wb['Lab'] if 'Lab' in wb.sheetnames else wb.active
+    
+    # 1. Configure Course Type Cells in Theory sheet
+    if 'Theory' in wb.sheetnames:
+        sheet_theory = wb['Theory']
+        sheet_theory.cell(row=7, column=4).value = "NO"  # STAND ALONE THEORY
+        sheet_theory.cell(row=8, column=4).value = "YES" # STAND ALONE LAB
+        sheet_theory.cell(row=9, column=4).value = "NO"  # IPCC
+        
+    # 2. Extract Master Student Roster from Lab sheet (Rows 9 to 79+)
+    master_students = {}
+    student_rows = {}
+    
+    for r in range(9, 1000):
+        usn_val = sheet.cell(row=r, column=2).value
+        name_val = sheet.cell(row=r, column=3).value
+        
+        if usn_val is None or str(usn_val).strip() == "":
+            is_empty = True
+            for offset in range(1, 5):
+                next_val = sheet.cell(row=r + offset, column=2).value
+                if next_val is not None and str(next_val).strip() != "":
+                    is_empty = False
+                    break
+            if is_empty:
+                break
+            else:
+                continue
+                
+        usn = str(usn_val).strip()
+        name = str(name_val).strip() if name_val else ""
+        if usn and usn.lower() not in ('nan', 'none', '') and usn.isalnum():
+            master_students[usn] = name
+            student_rows[usn] = r
+            
+    sorted_usns = sorted(master_students.keys())
+    num_students = len(sorted_usns)
+    
+    if num_students == 0:
+        raise ValueError("No students found in the Lab sheet template.")
+        
+    # 3. Synchronize Student Roster to Theory sheet (Rows 17 to 85)
+    # This is critical so that formulas in other sheets (which look up USNs/Names from Theory) resolve!
+    if 'Theory' in wb.sheetnames:
+        sheet_theory = wb['Theory']
+        for i in range(85 - 17 + 1):
+            r = 17 + i
+            if i < num_students:
+                usn = sorted_usns[i]
+                sheet_theory.cell(row=r, column=1).value = float(i + 1)
+                sheet_theory.cell(row=r, column=2).value = usn
+                sheet_theory.cell(row=r, column=3).value = master_students[usn]
+            else:
+                for c in range(1, 123):
+                    sheet_theory.cell(row=r, column=c).value = None
+
+    # Clear student marks columns in Theory (columns D to CW, rows 17 to 17 + N - 1)
+    # since it's a stand alone lab course.
+    if 'Theory' in wb.sheetnames:
+        sheet_theory = wb['Theory']
+        for r in range(17, 17 + num_students):
+            for c in range(4, 102):
+                sheet_theory.cell(row=r, column=c).value = None
+
+    # 4. Fill COs and POs mapped in Lab sheet
+    # Row 4 is POs Mapped, Row 5 is COs mapped. Columns D to O (4 to 15)
+    for idx in range(12):
+        col = 4 + idx
+        if idx < len(po_vals) and po_vals[idx]:
+            sheet.cell(row=4, column=col).value = po_vals[idx]
+        if idx < len(co_vals) and co_vals[idx] is not None:
+            sheet.cell(row=5, column=col).value = co_vals[idx]
+
+    # Clear marks in student rows of Lab (columns D to O, rows 9 to 9 + N - 1) before filling
+    for r in range(9, 9 + num_students):
+        for c in range(4, 16):
+            sheet.cell(row=r, column=c).value = None
+
+    # 5. Convert PDF pages to PNG images in memory
+    images = []
+    try:
+        doc = fitz.open(stream=rubrics_file.read(), filetype="pdf")
+        for page in doc:
+            pix = page.get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("png")
+            images.append(img_bytes)
+        doc.close()
+    except Exception as e:
+        raise ValueError(f"Failed to convert PDF to images: {e}")
+
+    # 6. Configure Gemini API and extract marks
+    if api_key:
+        genai.configure(api_key=api_key)
+    else:
+        raise ValueError("Gemini API key is required. Add it to .env or type it in the sidebar.")
+        
+    prompt = """
+    Analyze these scanned lab rubrics sheets containing handwritten student marks.
+    For each student, extract their USN (University Seat Number), Student Name, and the marks scored in each lab experiment (Lab 1 to Lab 12).
+    The PDF contains handwritten numbers inside grid cells corresponding to lab marks.
+    The sheets might list students page-by-page for each lab, or contain a consolidated table.
+    
+    Extract and compile the total marks scored by each student for each of the 12 labs.
+    If a student was absent or has no marks for a specific lab, use null for that lab mark.
+    
+    Return a structured JSON output with the following format:
+    {
+      "students": [
+        {
+          "usn": "1DS22AI001",
+          "name": "ABHAY VIJAY GOUDAR",
+          "marks": [28, 25, 30, 27, 29, 30, 28, 26, 29, 30, 27, 28]
+        }
+      ]
+    }
+    Make sure to match each student's marks correctly to their USN.
+    """
+
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        pil_images = [Image.open(io.BytesIO(img_bytes)) for img_bytes in images]
+        
+        response = model.generate_content(
+            [prompt, *pil_images],
+            generation_config={"response_mime_type": "application/json"}
+        )
+        
+        data = json.loads(response.text)
+        extracted_students = data.get("students", [])
+    except Exception as e:
+        raise ValueError(f"Gemini VLM API Call failed: {e}")
+
+    # 7. Write Extracted Marks to Lab Sheet (columns D to O)
+    for est in extracted_students:
+        usn = str(est.get("usn", "")).strip()
+        marks = est.get("marks", [])
+        
+        # Fuzzy match USN
+        match_usn = None
+        for r_usn in student_rows.keys():
+            if re.sub(r'[^a-zA-Z0-9]', '', r_usn).upper() == re.sub(r'[^a-zA-Z0-9]', '', usn).upper():
+                match_usn = r_usn
+                break
+                
+        if match_usn:
+            r = student_rows[match_usn]
+            for idx in range(12):
+                col = 4 + idx
+                if idx < len(marks):
+                    val = marks[idx]
+                    if val is not None and val != "":
+                        try:
+                            sheet.cell(row=r, column=col).value = float(val)
+                        except ValueError:
+                            pass
+
+    # 8. Prevent division by zero in other sheets by initializing unmapped values
+    if 'CES' in wb.sheetnames:
+        sheet_ces = wb['CES']
+        for col in range(4, 14): # D to M
+            if sheet_ces.cell(row=11, column=col).value is None:
+                sheet_ces.cell(row=11, column=col).value = 0
+
+    if 'CO_PO_PSO_MAPPING' in wb.sheetnames:
+        sheet_cppm = wb['CO_PO_PSO_MAPPING']
+        for r in range(4, 14):
+            for c in range(4, 19):
+                if sheet_cppm.cell(row=r, column=c).value is None:
+                    sheet_cppm.cell(row=r, column=c).value = 0
+
+    # Clean unused rows in Lab sheet (from 9 + num_students to 81)
+    for r in range(9 + num_students, 82):
+        for c in range(1, sheet.max_column + 1):
+            sheet.cell(row=r, column=c).value = None
+
+    # Clean unused rows in CIA MARKS sheet (from 14 + num_students to 83)
+    if 'CIA MARKS' in wb.sheetnames:
+        sheet_cia = wb['CIA MARKS']
+        for r in range(14 + num_students, 84):
+            for c in range(1, sheet_cia.max_column + 1):
+                sheet_cia.cell(row=r, column=c).value = None
+
+    # Clear Quiz1 / Quiz2 / CES sheets for lab course to avoid division by zero
+    for q_sheet_name in ['Quiz1', 'Quiz2', 'CES']:
+        if q_sheet_name in wb.sheetnames:
+            q_sheet = wb[q_sheet_name]
+            for r in range(9, 74):
+                for c in range(4, 80):
+                    q_sheet.cell(row=r, column=c).value = None
+
+    out_stream = io.BytesIO()
+    wb.save(out_stream)
+    return out_stream.getvalue()
+
 # ----------------- STREAMLIT INTERFACE -----------------
 
 st.markdown('<div class="main-title">📊 CIA Marks & CO Mapper</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle">Seamlessly automate Course Outcome mapping and marks consolidation.</div>', unsafe_allow_html=True)
 
 # Configuration Panel
+st.sidebar.markdown('## 🛠️ Course Selection')
+course_type = st.sidebar.radio(
+    "Select Course Component",
+    ["Theory Course", "Lab Course"],
+    help="Choose the component type you are processing."
+)
+
 st.header("1. Choose Course Configuration")
 
 col_type1, col_type2, col_type3 = st.columns(3)
 
 with col_type1:
-    st.markdown("""
-    <div class="card">
-        <h3>Theory Course <span class="tag-active">Active</span></h3>
+    theory_active = '<span class="tag-active">Active</span>' if course_type == "Theory Course" else ''
+    theory_opacity = '1.0' if course_type == "Theory Course" else '0.6'
+    st.markdown(f"""
+    <div class="card" style="opacity: {theory_opacity};">
+        <h3>Theory Course {theory_active}</h3>
         <p>Map CIA Question Papers, Student Marks, AAT, and Quiz into the Stand Alone Theory template.</p>
     </div>
     """, unsafe_allow_html=True)
     
 with col_type2:
-    st.markdown("""
-    <div class="card" style="opacity: 0.6;">
-        <h3>Lab Course <span class="tag-coming-soon">Soon</span></h3>
-        <p>Consolidate laboratory component evaluations and mappings cleanly.</p>
+    lab_active = '<span class="tag-active">Active</span>' if course_type == "Lab Course" else ''
+    lab_opacity = '1.0' if course_type == "Lab Course" else '0.6'
+    st.markdown(f"""
+    <div class="card" style="opacity: {lab_opacity};">
+        <h3>Lab Course {lab_active}</h3>
+        <p>Consolidate laboratory component evaluations and mappings cleanly using Vision VLM API.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -588,73 +877,161 @@ with col_type3:
 # Sidebar - Template Upload
 with st.sidebar:
     st.markdown('<h2 style="font-weight: 800;">⚙️ Setup Template</h2>', unsafe_allow_html=True)
-    template_file = st.file_uploader(
-        "Upload Stand Alone Theory Template (.xlsx)",
-        type=["xlsx"],
-        help="Provide the empty STAND ALONE THEORY EMPTY TEMPLATE.xlsx workbook."
-    )
+    if course_type == "Theory Course":
+        template_file = st.file_uploader(
+            "Upload Stand Alone Theory Template (.xlsx)",
+            type=["xlsx"],
+            help="Provide the empty STAND ALONE THEORY EMPTY TEMPLATE.xlsx workbook."
+        )
+    else:
+        template_file = st.file_uploader(
+            "Upload Stand Alone Lab Template (.xlsx)",
+            type=["xlsx"],
+            help="Provide the empty STAND ALONE LAB-empty.xlsx workbook."
+        )
     st.markdown("---")
     st.markdown("<small>Designed for department course mapping operations.</small>", unsafe_allow_html=True)
 
 st.header("2. Upload Assessment Data")
 
-# Tabbed Layout or Grouped Layout
-tab_cia1, tab_cia2, tab_cia3, tab_other = st.tabs(["📌 CIA-1", "📌 CIA-2", "📌 CIA-3", "📌 Quiz & AAT"])
+if course_type == "Theory Course":
+    # Tabbed Layout or Grouped Layout
+    tab_cia1, tab_cia2, tab_cia3, tab_other = st.tabs(["📌 CIA-1", "📌 CIA-2", "📌 CIA-3", "📌 Quiz & AAT"])
 
-qp_files = {}
-marks_files = {}
-quiz_file = None
-aat_file = None
+    qp_files = {}
+    marks_files = {}
+    quiz_file = None
+    aat_file = None
 
-with tab_cia1:
-    col1, col2 = st.columns(2)
-    with col1:
-        qp_files[1] = st.file_uploader("CIA-1 Question Paper (.docx)", type=["docx"], key="qp1")
-    with col2:
-        marks_files[1] = st.file_uploader("CIA-1 IA Marks (.xls)", type=["xls"], key="m1")
+    with tab_cia1:
+        col1, col2 = st.columns(2)
+        with col1:
+            qp_files[1] = st.file_uploader("CIA-1 Question Paper (.docx)", type=["docx"], key="qp1")
+        with col2:
+            marks_files[1] = st.file_uploader("CIA-1 IA Marks (.xls)", type=["xls"], key="m1")
 
-with tab_cia2:
-    col1, col2 = st.columns(2)
-    with col1:
-        qp_files[2] = st.file_uploader("CIA-2 Question Paper (.docx)", type=["docx"], key="qp2")
-    with col2:
-        marks_files[2] = st.file_uploader("CIA-2 IA Marks (.xls)", type=["xls"], key="m2")
+    with tab_cia2:
+        col1, col2 = st.columns(2)
+        with col1:
+            qp_files[2] = st.file_uploader("CIA-2 Question Paper (.docx)", type=["docx"], key="qp2")
+        with col2:
+            marks_files[2] = st.file_uploader("CIA-2 IA Marks (.xls)", type=["xls"], key="m2")
 
-with tab_cia3:
-    col1, col2 = st.columns(2)
-    with col1:
-        qp_files[3] = st.file_uploader("CIA-3 Question Paper (.docx)", type=["docx"], key="qp3")
-    with col2:
-        marks_files[3] = st.file_uploader("CIA-3 IA Marks (.xls)", type=["xls"], key="m3")
+    with tab_cia3:
+        col1, col2 = st.columns(2)
+        with col1:
+            qp_files[3] = st.file_uploader("CIA-3 Question Paper (.docx)", type=["docx"], key="qp3")
+        with col2:
+            marks_files[3] = st.file_uploader("CIA-3 IA Marks (.xls)", type=["xls"], key="m3")
 
-with tab_other:
-    col1, col2 = st.columns(2)
-    with col1:
-        quiz_file = st.file_uploader("Quiz Marks (.xls)", type=["xls"], key="quiz")
-    with col2:
-        aat_file = st.file_uploader("AAT Marks (.xls)", type=["xls"], key="aat")
+    with tab_other:
+        col1, col2 = st.columns(2)
+        with col1:
+            quiz_file = st.file_uploader("Quiz Marks (.xls)", type=["xls"], key="quiz")
+        with col2:
+            aat_file = st.file_uploader("AAT Marks (.xls)", type=["xls"], key="aat")
+
+else:
+    # Lab Course Upload Section
+    st.subheader("Configure Lab Mapping Parameters")
+    col_co, col_po = st.columns(2)
+    with col_co:
+        co_input = st.text_input(
+            "Lab CO Mappings (Row 5)", 
+            value="1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4",
+            help="Enter exactly 12 CO values separated by commas for columns D to O."
+        )
+    with col_po:
+        po_input = st.text_input(
+            "Lab PO Mappings (Row 4)", 
+            value="1,5; 1,5; 1,5; 2,5; 2,5; 2,5; 3,5; 3,5; 3,5; 4,5; 4,5; 4,5",
+            help="Enter PO mappings for each lab. Separate labs with a semicolon (;) and PO numbers with commas (,). We format it automatically."
+        )
+        
+    st.subheader("Upload Rubrics Scanned PDF")
+    rubrics_file = st.file_uploader(
+        "Upload Scanned Lab Rubrics PDF (.pdf)",
+        type=["pdf"],
+        help="Scanned PDF showing student marks for all 12 labs."
+    )
+    
+    st.subheader("Gemini Vision API Configuration")
+    env_key = os.environ.get("GEMINI_API_KEY") or ""
+    user_api_key = st.text_input(
+        "Gemini API Key Override (Optional)",
+        value="",
+        type="password",
+        help="If not set in .env, paste your key here. Leave blank to use the key configured in the .env file."
+    )
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 if st.button("Generate Consolidated Excel", type="primary"):
     if not template_file:
         st.error("⚠️ Please configure the Excel Template in the sidebar before processing.")
-    elif not any(marks_files.values()) and not quiz_file and not aat_file:
+    elif course_type == "Theory Course" and not any(marks_files.values()) and not quiz_file and not aat_file:
         st.error("⚠️ Please upload at least one marks file (CIA, Quiz, or AAT) to map scores.")
+    elif course_type == "Lab Course" and not rubrics_file:
+        st.error("⚠️ Please upload the scanned rubrics PDF containing handwritten marks.")
     else:
         with st.spinner("Processing templates and compiling rosters..."):
             try:
-                out_bytes = process_stand_alone_theory(
-                    template_file,
-                    qp_files,
-                    marks_files,
-                    quiz_file,
-                    aat_file
-                )
+                if course_type == "Theory Course":
+                    out_bytes = process_stand_alone_theory(
+                        template_file,
+                        qp_files,
+                        marks_files,
+                        quiz_file,
+                        aat_file
+                    )
+                    filename_suggest = "Consolidated_Theory_Scheme.xlsx"
+                else:
+                    # Parse CO values
+                    co_vals = []
+                    for val in co_input.split(","):
+                        val_str = val.strip()
+                        if val_str:
+                            try:
+                                co_vals.append(float(val_str))
+                            except ValueError:
+                                co_vals.append(val_str)
+                    
+                    if len(co_vals) != 12:
+                        st.warning(f"Note: You entered {len(co_vals)} CO values. Padded with defaults to make 12.")
+                        co_vals = (co_vals + [1.0]*12)[:12]
+
+                    # Parse PO values
+                    raw_po_groups = po_input.split(";")
+                    po_vals = []
+                    for grp in raw_po_groups:
+                        grp = grp.strip()
+                        if grp:
+                            digits = [d.strip() for d in grp.split(",") if d.strip().isdigit()]
+                            if digits:
+                                po_vals.append("0," + ",".join(digits) + ",0")
+                            else:
+                                po_vals.append("")
+                        else:
+                            po_vals.append("")
+                    
+                    if len(po_vals) != 12:
+                        st.warning(f"Note: You entered {len(po_vals)} PO groups. Padded with defaults to make 12.")
+                        po_vals = (po_vals + [""]*12)[:12]
+
+                    api_key = user_api_key if user_api_key else env_key
+                    if not api_key:
+                        raise ValueError("No Gemini API key found. Please define GEMINI_API_KEY in your .env file or input it above.")
+
+                    out_bytes = process_stand_alone_lab(
+                        template_file,
+                        rubrics_file,
+                        api_key,
+                        co_vals,
+                        po_vals
+                    )
+                    filename_suggest = "Consolidated_Lab_Scheme.xlsx"
+
                 st.success("🎉 Successfully compiled course data and generated spreadsheet!")
-                
-                # Fetch course details if available to suggest name
-                filename_suggest = "Consolidated_Theory_Scheme.xlsx"
                 st.download_button(
                     label="📥 Download Consolidated Scheme (.xlsx)",
                     data=out_bytes,
@@ -663,4 +1040,4 @@ if st.button("Generate Consolidated Excel", type="primary"):
                 )
             except Exception as e:
                 st.error(f"❌ An error occurred during mapping: {str(e)}")
-                st.info("Ensure all uploaded XLS files are standard course marks sheets and DOCX files match the question paper layout.")
+                st.info("Check that all files match the expected formats and that your Gemini API key is active.")
