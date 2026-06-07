@@ -564,33 +564,94 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
         if metadata and metadata.get('course_code'):
             target_code = re.sub(r'[^a-zA-Z0-9]', '', str(metadata['course_code'])).upper()
             
+            # Extract core code by removing leading scheme indicators (e.g., "22", "21")
+            m_target = re.match(r'^\d+(.*)', target_code)
+            target_core = m_target.group(1) if m_target else target_code
+            
             import os
             src_mapping_file = None
             for f_name in os.listdir('.'):
-                if 'CO-PO' in f_name and 'MAPPING' in f_name and f_name.endswith('.xlsx'):
-                    src_mapping_file = f_name
-                    break
-            if not src_mapping_file and os.path.exists('2021-CO-PO -PSO-MAPPING.xlsx'):
-                src_mapping_file = '2021-CO-PO -PSO-MAPPING.xlsx'
+                f_upper = f_name.upper()
+                if 'CO' in f_upper and 'PO' in f_upper and 'MAPPING' in f_upper:
+                    if f_upper.endswith('.XLSX') or f_upper.endswith('.XLS'):
+                        src_mapping_file = f_name
+                        break
+            if not src_mapping_file:
+                for fallback in ['2021-CO-PO -PSO-MAPPING.xlsx', '2021 CO PO PSO MAPPING.xls', '2021-CO-PO-PSO-MAPPING.xlsx', '2021-CO-PO-PSO-MAPPING.xls']:
+                    if os.path.exists(fallback):
+                        src_mapping_file = fallback
+                        break
                 
             if src_mapping_file:
                 try:
-                    src_df = pd.read_excel(src_mapping_file, engine='openpyxl')
+                    engine = 'openpyxl' if src_mapping_file.lower().endswith('.xlsx') else 'xlrd'
+                    raw_df = pd.read_excel(src_mapping_file, engine=engine, header=None)
+                    
+                    # Scan first 15 rows to find the header row containing 'Course Code'
+                    header_row_idx = 0
+                    course_code_col_idx = 0
+                    found_header = False
+                    
+                    for r_idx in range(min(15, len(raw_df))):
+                        row_vals = [str(x).strip().upper() for x in raw_df.iloc[r_idx].values]
+                        for c_idx, val in enumerate(row_vals):
+                            if ('COURSE' in val and 'CODE' in val) or ('SUBJ' in val and 'CODE' in val):
+                                header_row_idx = r_idx
+                                course_code_col_idx = c_idx
+                                found_header = True
+                                break
+                        if found_header:
+                            break
+                            
+                    if found_header:
+                        cols = [str(x).strip() for x in raw_df.iloc[header_row_idx].values]
+                        seen = {}
+                        new_cols = []
+                        for col in cols:
+                            if col in seen:
+                                seen[col] += 1
+                                new_cols.append(f"{col}_{seen[col]}")
+                            else:
+                                seen[col] = 0
+                                new_cols.append(col)
+                                
+                        src_df = raw_df.iloc[header_row_idx+1:].copy()
+                        src_df.columns = new_cols
+                        course_code_col = new_cols[course_code_col_idx]
+                    else:
+                        src_df = pd.read_excel(src_mapping_file, engine=engine)
+                        course_code_col = None
+                        for col in src_df.columns:
+                            col_norm = re.sub(r'[^a-zA-Z0-9]', '', str(col)).upper()
+                            if 'COURSECODE' in col_norm or 'SUBJCODE' in col_norm:
+                                course_code_col = col
+                                break
+                        if course_code_col is None:
+                            course_code_col = src_df.columns[0]
                     
                     # Normalize Course Code column values to search for target_code
                     match_idx = None
-                    for idx, val in enumerate(src_df['Course Code'].values):
+                    for idx, val in enumerate(src_df[course_code_col].values):
                         if pd.notna(val):
                             norm_val = re.sub(r'[^a-zA-Z0-9]', '', str(val)).upper()
+                            # Try exact match first
                             if norm_val == target_code:
                                 match_idx = idx
                                 break
+                            # Fallback: Compare core code (scheme-agnostic, e.g. "AI51" vs "AI51")
+                            m_candidate = re.match(r'^\d+(.*)', norm_val)
+                            candidate_core = m_candidate.group(1) if m_candidate else norm_val
+                            if target_core and len(target_core) >= 3:
+                                if target_core in candidate_core or candidate_core in target_core:
+                                    match_idx = idx
+                                    break
                                 
                     if match_idx is not None:
                         # Collect sequential rows belonging to this course
                         co_rows = []
                         for idx in range(match_idx, len(src_df)):
-                            if idx > match_idx and pd.notna(src_df.iloc[idx]['Course Code']):
+                            val_code = src_df.iloc[idx][course_code_col]
+                            if idx > match_idx and pd.notna(val_code) and str(val_code).strip() != '':
                                 break
                             co_rows.append(src_df.iloc[idx])
                             
@@ -607,9 +668,12 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
                             if target_row > 13: # Limit to CO10
                                 break
                                 
+                            co_row_keys_normalized = {re.sub(r'[^a-zA-Z0-9]', '', str(k)).upper(): k for k in co_row.keys()}
                             for col_name, col_idx in header_cols.items():
-                                if col_name in co_row:
-                                    val = co_row[col_name]
+                                norm_col_name = re.sub(r'[^a-zA-Z0-9]', '', str(col_name)).upper()
+                                if norm_col_name in co_row_keys_normalized:
+                                    src_key = co_row_keys_normalized[norm_col_name]
+                                    val = co_row[src_key]
                                     if pd.notna(val) and str(val).strip() != '':
                                         try:
                                             sheet_cppm.cell(row=target_row, column=col_idx).value = float(val)
@@ -622,11 +686,12 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
                     # Log mapping warnings gracefully to Streamlit
                     st.warning(f"Note: Could not automatically map CO-PO weights from '{src_mapping_file}': {e}")
                 
+                
     out_stream = io.BytesIO()
     wb.save(out_stream)
     return out_stream.getvalue()
 
-def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_vals):
+def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_vals, course_code=None):
     """Fills the Stand Alone Lab sheet cleanly and handles dynamic rosters."""
     import google.generativeai as genai
     import fitz  # PyMuPDF
@@ -643,6 +708,8 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
         sheet_theory.cell(row=7, column=4).value = "NO"  # STAND ALONE THEORY
         sheet_theory.cell(row=8, column=4).value = "YES" # STAND ALONE LAB
         sheet_theory.cell(row=9, column=4).value = "NO"  # IPCC
+        if course_code:
+            sheet_theory.cell(row=5, column=1).value = f"COURSE  CODE : {course_code}"
         
     # 2. Extract Master Student Roster from Lab sheet (Rows 9 to 79+)
     master_students = {}
@@ -733,6 +800,7 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
         
     prompt = """
     Analyze these scanned lab rubrics sheets containing handwritten student marks.
+    Find the Course Code (e.g. 22AIL55, 21AIL35, etc.) printed at the top of the sheets.
     For each student, extract their USN (University Seat Number), Student Name, and the marks scored in each lab experiment (Lab 1 to Lab 12).
     The PDF contains handwritten numbers inside grid cells corresponding to lab marks.
     The sheets might list students page-by-page for each lab, or contain a consolidated table.
@@ -742,6 +810,7 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
     
     Return a structured JSON output with the following format:
     {
+      "course_code": "21AIL35",
       "students": [
         {
           "usn": "1DS22AI001",
@@ -764,6 +833,12 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
         
         data = json.loads(response.text)
         extracted_students = data.get("students", [])
+        extracted_course_code = data.get("course_code", "")
+        if extracted_course_code:
+            course_code = str(extracted_course_code).strip()
+            if 'Theory' in wb.sheetnames:
+                sheet_theory = wb['Theory']
+                sheet_theory.cell(row=5, column=1).value = f"COURSE  CODE : {course_code}"
     except Exception as e:
         raise ValueError(f"Gemini VLM API Call failed: {e}")
 
@@ -800,10 +875,136 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
 
     if 'CO_PO_PSO_MAPPING' in wb.sheetnames:
         sheet_cppm = wb['CO_PO_PSO_MAPPING']
+        
+        # Default initialization: fill all cells in CO1-CO10 (D4:R13) with 0 to prevent division by zero
         for r in range(4, 14):
-            for c in range(4, 19):
-                if sheet_cppm.cell(row=r, column=c).value is None:
-                    sheet_cppm.cell(row=r, column=c).value = 0
+            for c in range(4, 19): # Columns D to R
+                sheet_cppm.cell(row=r, column=c).value = 0
+        # Attempt to automatically load mapping based on course code
+        if course_code:
+            target_code = re.sub(r'[^a-zA-Z0-9]', '', str(course_code)).upper()
+            
+            # Extract core code by removing leading scheme indicators (e.g., "22", "21")
+            m_target = re.match(r'^\d+(.*)', target_code)
+            target_core = m_target.group(1) if m_target else target_code
+            
+            import os
+            src_mapping_file = None
+            for f_name in os.listdir('.'):
+                f_upper = f_name.upper()
+                if 'CO' in f_upper and 'PO' in f_upper and 'MAPPING' in f_upper:
+                    if f_upper.endswith('.XLSX') or f_upper.endswith('.XLS'):
+                        src_mapping_file = f_name
+                        break
+            if not src_mapping_file:
+                for fallback in ['2021-CO-PO -PSO-MAPPING.xlsx', '2021 CO PO PSO MAPPING.xls', '2021-CO-PO-PSO-MAPPING.xlsx', '2021-CO-PO-PSO-MAPPING.xls']:
+                    if os.path.exists(fallback):
+                        src_mapping_file = fallback
+                        break
+                
+            if src_mapping_file:
+                try:
+                    engine = 'openpyxl' if src_mapping_file.lower().endswith('.xlsx') else 'xlrd'
+                    raw_df = pd.read_excel(src_mapping_file, engine=engine, header=None)
+                    
+                    # Scan first 15 rows to find the header row containing 'Course Code'
+                    header_row_idx = 0
+                    course_code_col_idx = 0
+                    found_header = False
+                    
+                    for r_idx in range(min(15, len(raw_df))):
+                        row_vals = [str(x).strip().upper() for x in raw_df.iloc[r_idx].values]
+                        for c_idx, val in enumerate(row_vals):
+                            if ('COURSE' in val and 'CODE' in val) or ('SUBJ' in val and 'CODE' in val):
+                                header_row_idx = r_idx
+                                course_code_col_idx = c_idx
+                                found_header = True
+                                break
+                        if found_header:
+                            break
+                            
+                    if found_header:
+                        cols = [str(x).strip() for x in raw_df.iloc[header_row_idx].values]
+                        seen = {}
+                        new_cols = []
+                        for col in cols:
+                            if col in seen:
+                                seen[col] += 1
+                                new_cols.append(f"{col}_{seen[col]}")
+                            else:
+                                seen[col] = 0
+                                new_cols.append(col)
+                                
+                        src_df = raw_df.iloc[header_row_idx+1:].copy()
+                        src_df.columns = new_cols
+                        course_code_col = new_cols[course_code_col_idx]
+                    else:
+                        src_df = pd.read_excel(src_mapping_file, engine=engine)
+                        course_code_col = None
+                        for col in src_df.columns:
+                            col_norm = re.sub(r'[^a-zA-Z0-9]', '', str(col)).upper()
+                            if 'COURSECODE' in col_norm or 'SUBJCODE' in col_norm:
+                                course_code_col = col
+                                break
+                        if course_code_col is None:
+                            course_code_col = src_df.columns[0]
+                    
+                    # Normalize Course Code column values to search for target_code
+                    match_idx = None
+                    for idx, val in enumerate(src_df[course_code_col].values):
+                        if pd.notna(val):
+                            norm_val = re.sub(r'[^a-zA-Z0-9]', '', str(val)).upper()
+                            # Try exact match first
+                            if norm_val == target_code:
+                                match_idx = idx
+                                break
+                            # Fallback: Compare core code (scheme-agnostic, e.g. "AI51" vs "AI51")
+                            m_candidate = re.match(r'^\d+(.*)', norm_val)
+                            candidate_core = m_candidate.group(1) if m_candidate else norm_val
+                            if target_core and len(target_core) >= 3:
+                                if target_core in candidate_core or candidate_core in target_core:
+                                    match_idx = idx
+                                    break
+                                
+                    if match_idx is not None:
+                        # Collect sequential rows belonging to this course
+                        co_rows = []
+                        for idx in range(match_idx, len(src_df)):
+                            val_code = src_df.iloc[idx][course_code_col]
+                            if idx > match_idx and pd.notna(val_code) and str(val_code).strip() != '':
+                                break
+                            co_rows.append(src_df.iloc[idx])
+                            
+                        # Extract header columns mapping (e.g. 'PO1' -> Col 4)
+                        header_cols = {}
+                        for col in range(4, 19): # D to R
+                            header_val = sheet_cppm.cell(row=3, column=col).value
+                            if header_val:
+                                header_cols[str(header_val).strip()] = col
+                                
+                        # Write the mapped values into the template
+                        for co_idx, co_row in enumerate(co_rows):
+                            target_row = 4 + co_idx # CO1 -> Row 4, CO2 -> Row 5...
+                            if target_row > 13: # Limit to CO10
+                                break
+                                
+                            co_row_keys_normalized = {re.sub(r'[^a-zA-Z0-9]', '', str(k)).upper(): k for k in co_row.keys()}
+                            for col_name, col_idx in header_cols.items():
+                                norm_col_name = re.sub(r'[^a-zA-Z0-9]', '', str(col_name)).upper()
+                                if norm_col_name in co_row_keys_normalized:
+                                    src_key = co_row_keys_normalized[norm_col_name]
+                                    val = co_row[src_key]
+                                    if pd.notna(val) and str(val).strip() != '':
+                                        try:
+                                            sheet_cppm.cell(row=target_row, column=col_idx).value = float(val)
+                                        except ValueError:
+                                            sheet_cppm.cell(row=target_row, column=col_idx).value = str(val)
+                                    else:
+                                        # Leave unmapped cells in active rows as empty/None or 0
+                                        sheet_cppm.cell(row=target_row, column=col_idx).value = None
+                except Exception as e:
+                    # Log mapping warnings gracefully to Streamlit
+                    st.warning(f"Note: Could not automatically map CO-PO weights from '{src_mapping_file}': {e}")
 
     # Clean unused rows in Lab sheet (from 9 + num_students to 81)
     for r in range(9 + num_students, 82):
