@@ -27,6 +27,18 @@ load_env_file(script_env)
 if os.path.abspath(cwd_env) != os.path.abspath(script_env):
     load_env_file(cwd_env)
 
+def get_clean_core_code(code):
+    if not code:
+        return ""
+    # Remove any non-alphanumeric characters first
+    clean = re.sub(r'[^a-zA-Z0-9]', '', str(code)).upper()
+    # Strip leading 4-digit scheme year if present
+    if len(clean) > 4 and clean[:4].isdigit():
+        clean = clean[4:]
+    # Strip leading 2-digit scheme year if present
+    elif len(clean) > 2 and clean[:2].isdigit():
+        clean = clean[2:]
+    return clean
 
 st.set_page_config(
     page_title="CIA Marks & CO Mapper",
@@ -323,7 +335,7 @@ def extract_metadata(file_stream):
 
 # ----------------- CORE PROCESSING PIPELINE -----------------
 
-def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, aat_file):
+def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, aat_file, override_course_code=None):
     """Fills the Stand Alone Theory sheet cleanly and handles dynamic rosters."""
     wb = load_workbook(io.BytesIO(template_file.read()))
     sheet = wb['Theory'] if 'Theory' in wb.sheetnames else wb.active
@@ -423,6 +435,9 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
             marks_files[test_idx].seek(0)
             if metadata['course_code']:
                 break
+                
+    if override_course_code:
+        metadata['course_code'] = override_course_code
                 
     if metadata:
         if metadata['academic_year']:
@@ -573,10 +588,7 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
         # Attempt to automatically load mapping based on course code
         if metadata and metadata.get('course_code'):
             target_code = re.sub(r'[^a-zA-Z0-9]', '', str(metadata['course_code'])).upper()
-            
-            # Extract core code by removing leading scheme indicators (e.g., "22", "21")
-            m_target = re.match(r'^\d+(.*)', target_code)
-            target_core = m_target.group(1) if m_target else target_code
+            target_core = get_clean_core_code(target_code)
             
             import os
             script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -663,10 +675,9 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
                                 match_idx = idx
                                 break
                             # Fallback: Compare core code (scheme-agnostic, e.g. "AI51" vs "AI51")
-                            m_candidate = re.match(r'^\d+(.*)', norm_val)
-                            candidate_core = m_candidate.group(1) if m_candidate else norm_val
+                            candidate_core = get_clean_core_code(norm_val)
                             if target_core and len(target_core) >= 3:
-                                if target_core in candidate_core or candidate_core in target_core:
+                                if target_core == candidate_core:
                                     match_idx = idx
                                     break
                                 
@@ -706,6 +717,9 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
                                     else:
                                         # Leave unmapped cells in active rows as empty/None or 0
                                         sheet_cppm.cell(row=target_row, column=col_idx).value = None
+                        st.success(f"✔️ Automatically mapped CO-PO weights for course code '{target_code}' (matched with '{src_df.iloc[match_idx][course_code_col]}') from mapping database.")
+                    else:
+                        st.warning(f"⚠️ Course code '{target_code}' (core: '{target_core}') was not found in the mapping database '{src_mapping_file}'. The CO-PO matrix will remain initialized to 0.")
                 except Exception as e:
                     # Log mapping warnings gracefully to Streamlit
                     st.warning(f"Note: Could not automatically map CO-PO weights from '{src_mapping_file}': {e}")
@@ -715,7 +729,7 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
     wb.save(out_stream)
     return out_stream.getvalue()
 
-def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_vals, course_code=None):
+def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_vals, override_course_code=None):
     """Fills the Stand Alone Lab sheet cleanly and handles dynamic rosters."""
     import google.generativeai as genai
     import fitz  # PyMuPDF
@@ -725,6 +739,8 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
     
     wb = load_workbook(io.BytesIO(template_file.read()))
     sheet = wb['Lab'] if 'Lab' in wb.sheetnames else wb.active
+    
+    course_code = override_course_code
     
     # 1. Configure Course Type Cells in Theory sheet
     if 'Theory' in wb.sheetnames:
@@ -876,8 +892,9 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
         data = json.loads(response.text)
         extracted_students = data.get("students", [])
         extracted_course_code = data.get("course_code", "")
-        if extracted_course_code:
+        if extracted_course_code and not course_code:
             course_code = str(extracted_course_code).strip()
+        if course_code:
             if 'Theory' in wb.sheetnames:
                 sheet_theory = wb['Theory']
                 sheet_theory.cell(row=5, column=1).value = f"COURSE  CODE : {course_code}"
@@ -981,10 +998,7 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
         # Attempt to automatically load mapping based on course code
         if course_code:
             target_code = re.sub(r'[^a-zA-Z0-9]', '', str(course_code)).upper()
-            
-            # Extract core code by removing leading scheme indicators (e.g., "22", "21")
-            m_target = re.match(r'^\d+(.*)', target_code)
-            target_core = m_target.group(1) if m_target else target_code
+            target_core = get_clean_core_code(target_code)
             
             import os
             script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1071,10 +1085,9 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
                                 match_idx = idx
                                 break
                             # Fallback: Compare core code (scheme-agnostic, e.g. "AI51" vs "AI51")
-                            m_candidate = re.match(r'^\d+(.*)', norm_val)
-                            candidate_core = m_candidate.group(1) if m_candidate else norm_val
+                            candidate_core = get_clean_core_code(norm_val)
                             if target_core and len(target_core) >= 3:
-                                if target_core in candidate_core or candidate_core in target_core:
+                                if target_core == candidate_core:
                                     match_idx = idx
                                     break
                                 
@@ -1114,6 +1127,9 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
                                     else:
                                         # Leave unmapped cells in active rows as empty/None or 0
                                         sheet_cppm.cell(row=target_row, column=col_idx).value = None
+                        st.success(f"✔️ Automatically mapped CO-PO weights for course code '{target_code}' (matched with '{src_df.iloc[match_idx][course_code_col]}') from mapping database.")
+                    else:
+                        st.warning(f"⚠️ Course code '{target_code}' (core: '{target_core}') was not found in the mapping database '{src_mapping_file}'. The CO-PO matrix will remain initialized to 0.")
                 except Exception as e:
                     # Log mapping warnings gracefully to Streamlit
                     st.warning(f"Note: Could not automatically map CO-PO weights from '{src_mapping_file}': {e}")
@@ -1142,7 +1158,7 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
     wb.save(out_stream)
     return out_stream.getvalue()
 
-def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_file, rubrics_file, api_key, co_vals, po_vals):
+def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_file, rubrics_file, api_key, co_vals, po_vals, override_course_code=None):
     """
     Consolidates both Theory assessments and Lab Rubrics VLM extraction
     into the IPCC template workbook (containing both Theory and Lab sheets).
@@ -1165,7 +1181,7 @@ def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_fil
     # 2. VLM Extraction if rubrics_file is provided (6 labs)
     extracted_students = []
     extracted_marks_map = {}
-    course_code = None
+    course_code = override_course_code
     
     if rubrics_file and api_key:
         # Convert PDF pages to JPEG images in memory to optimize payload size
@@ -1304,7 +1320,7 @@ def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_fil
             data = json.loads(response.text)
             extracted_students = data.get("students", [])
             extracted_course_code = data.get("course_code", "")
-            if extracted_course_code:
+            if extracted_course_code and not course_code:
                 course_code = str(extracted_course_code).strip()
         except Exception as e:
             raise ValueError(f"Gemini VLM API Call failed: {e}")
@@ -1587,8 +1603,7 @@ def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_fil
         ccode = metadata.get('course_code')
         if ccode:
             target_code = re.sub(r'[^a-zA-Z0-9]', '', str(ccode)).upper()
-            m_target = re.match(r'^\d+(.*)', target_code)
-            target_core = m_target.group(1) if m_target else target_code
+            target_core = get_clean_core_code(target_code)
             
             import os
             script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1663,10 +1678,9 @@ def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_fil
                             if norm_val == target_code:
                                 match_idx = idx
                                 break
-                            m_candidate = re.match(r'^\d+(.*)', norm_val)
-                            candidate_core = m_candidate.group(1) if m_candidate else norm_val
+                            candidate_core = get_clean_core_code(norm_val)
                             if target_core and len(target_core) >= 3:
-                                if target_core in candidate_core or candidate_core in target_core:
+                                if target_core == candidate_core:
                                     match_idx = idx
                                     break
                     if match_idx is not None:
@@ -1698,6 +1712,9 @@ def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_fil
                                             sheet_cppm.cell(row=target_row, column=col_idx).value = str(val)
                                     else:
                                         sheet_cppm.cell(row=target_row, column=col_idx).value = None
+                        st.success(f"✔️ Automatically mapped CO-PO weights for course code '{target_code}' (matched with '{src_df.iloc[match_idx][course_code_col]}') from mapping database.")
+                    else:
+                        st.warning(f"⚠️ Course code '{target_code}' (core: '{target_core}') was not found in the mapping database '{src_mapping_file}'. The CO-PO matrix will remain initialized to 0.")
                 except Exception as e:
                     st.warning(f"Note: Could not automatically map CO-PO weights from '{src_mapping_file}': {e}")
 
@@ -1725,6 +1742,13 @@ course_type = st.sidebar.radio(
     ["Theory Course", "Lab Course", "IPCC Course"],
     help="Choose the component type you are processing."
 )
+
+manual_course_code = st.sidebar.text_input(
+    "Course Code Override (Optional)",
+    value="",
+    placeholder="e.g. 22AI52 or AI52",
+    help="Manually enter the course code if it is not detected or if you want to override it."
+).strip()
 
 st.header("1. Choose Course Configuration")
 
@@ -1920,7 +1944,8 @@ if st.button("Generate Consolidated Excel", type="primary"):
                         qp_files,
                         marks_files,
                         quiz_file,
-                        aat_file
+                        aat_file,
+                        override_course_code=manual_course_code if manual_course_code else None
                     )
                     filename_suggest = "Consolidated_Theory_Scheme.xlsx"
                 elif course_type == "Lab Course":
@@ -1965,7 +1990,8 @@ if st.button("Generate Consolidated Excel", type="primary"):
                         rubrics_file,
                         api_key,
                         co_vals,
-                        po_vals
+                        po_vals,
+                        override_course_code=manual_course_code if manual_course_code else None
                     )
                     filename_suggest = "Consolidated_Lab_Scheme.xlsx"
                 else:
@@ -2013,7 +2039,8 @@ if st.button("Generate Consolidated Excel", type="primary"):
                         rubrics_file,
                         api_key,
                         co_vals,
-                        po_vals
+                        po_vals,
+                        override_course_code=manual_course_code if manual_course_code else None
                     )
                     filename_suggest = "Consolidated_IPCC_Scheme.xlsx"
 
