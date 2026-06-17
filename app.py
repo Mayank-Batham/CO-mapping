@@ -1935,17 +1935,15 @@ with st.sidebar:
 
 st.header("2. Upload Assessment Data")
 
-# Define optional CES file upload variables
-theory_ces_file = None
-lab_ces_file = None
-ipcc_ces_file = None
+# Define optional CES file upload variable
+ces_file = None
 
 if course_type in ("Theory Course", "IPCC Course"):
     # Render tabs dynamically
     if course_type == "Theory Course":
-        tabs_list = ["📌 CIA-1", "📌 CIA-2", "📌 CIA-3", "📌 Quiz & AAT", "📋 Course Exit Survey"]
+        tabs_list = ["📌 CIA-1", "📌 CIA-2", "📌 CIA-3", "📌 Quiz & AAT"]
     else:
-        tabs_list = ["📌 CIA-1", "📌 CIA-2", "📌 CIA-3", "📌 Quiz & AAT", "📌 Lab Component", "📋 Course Exit Survey"]
+        tabs_list = ["📌 CIA-1", "📌 CIA-2", "📌 CIA-3", "📌 Quiz & AAT", "📌 Lab Component"]
         
     tabs = st.tabs(tabs_list)
 
@@ -1988,16 +1986,6 @@ if course_type in ("Theory Course", "IPCC Course"):
         with col2:
             aat_file = st.file_uploader("AAT Marks (.xls)", type=["xls"], key="aat")
             
-    if course_type == "Theory Course":
-        with tabs[4]:
-            st.subheader("Upload Course Exit Survey Data")
-            theory_ces_file = st.file_uploader(
-                "Upload Course Exit Survey (.xlsx)", 
-                type=["xlsx"], 
-                key="theory_ces",
-                help="Optional Course Exit Survey Excel file."
-            )
-            
     if course_type == "IPCC Course":
         with tabs[4]:
             st.subheader("Configure Lab Mapping Parameters")
@@ -2031,14 +2019,15 @@ if course_type in ("Theory Course", "IPCC Course"):
                 help="If not set in .env, paste your key here. Leave blank to use the key configured in the .env file."
             )
             
-        with tabs[5]:
-            st.subheader("Upload Course Exit Survey Data")
-            ipcc_ces_file = st.file_uploader(
-                "Upload Course Exit Survey (.xlsx)", 
-                type=["xlsx"], 
-                key="ipcc_ces",
-                help="Optional Course Exit Survey Excel file."
-            )
+    # Render Course Exit Survey uploader outside and below the tabs
+    st.markdown("---")
+    st.subheader("📋 Course Exit Survey")
+    ces_file = st.file_uploader(
+        "Upload Course Exit Survey (.xlsx)", 
+        type=["xlsx"], 
+        key="course_ces",
+        help="Optional Course Exit Survey Excel file."
+    )
 
 else:
     # Lab Course Upload Section
@@ -2065,7 +2054,7 @@ else:
     )
     
     st.subheader("Upload Course Exit Survey Data")
-    lab_ces_file = st.file_uploader(
+    ces_file = st.file_uploader(
         "Upload Course Exit Survey (.xlsx)", 
         type=["xlsx"], 
         key="lab_ces",
@@ -2103,7 +2092,7 @@ if st.button("Generate Consolidated Excel", type="primary"):
                         quiz_file,
                         aat_file,
                         override_course_code=manual_course_code if manual_course_code else None,
-                        ces_file=theory_ces_file
+                        ces_file=ces_file
                     )
                     filename_suggest = "Consolidated_Theory_Scheme.xlsx"
                 elif course_type == "Lab Course":
@@ -2150,7 +2139,7 @@ if st.button("Generate Consolidated Excel", type="primary"):
                         co_vals,
                         po_vals,
                         override_course_code=manual_course_code if manual_course_code else None,
-                        ces_file=lab_ces_file
+                        ces_file=ces_file
                     )
                     filename_suggest = "Consolidated_Lab_Scheme.xlsx"
                 else:
@@ -2200,7 +2189,7 @@ if st.button("Generate Consolidated Excel", type="primary"):
                         co_vals,
                         po_vals,
                         override_course_code=manual_course_code if manual_course_code else None,
-                        ces_file=ipcc_ces_file
+                        ces_file=ces_file
                     )
                     filename_suggest = "Consolidated_IPCC_Scheme.xlsx"
 
