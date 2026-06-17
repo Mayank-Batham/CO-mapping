@@ -333,9 +333,146 @@ def extract_metadata(file_stream):
             
     return metadata
 
+def populate_ces_sheet(wb, ces_file, master_students, sorted_usns, course_type):
+    """
+    Populates the 'CES' sheet of the workbook with the student roster and ratings.
+    If ces_file is provided, student ratings are extracted and written.
+    Otherwise, only the student roster is updated.
+    """
+    if 'CES' not in wb.sheetnames:
+        return
+    
+    sheet_ces = wb['CES']
+    
+    # 1. Parse survey responses if survey file is uploaded
+    survey_data = {}
+    if ces_file:
+        try:
+            ces_file.seek(0)
+            wb_survey = load_workbook(io.BytesIO(ces_file.read()), data_only=True)
+            sheet_survey = wb_survey['CES'] if 'CES' in wb_survey.sheetnames else wb_survey.active
+            
+            # Find the starting row of student records in the survey
+            start_row = None
+            for r in range(1, 25):
+                c1 = sheet_survey.cell(row=r, column=1).value
+                c2 = sheet_survey.cell(row=r, column=2).value
+                if c1 in (1, 1.0) or (c2 and isinstance(c2, str) and re.match(r'^[a-zA-Z0-9]+$', c2.strip())):
+                    start_row = r
+                    break
+            
+            if start_row is None:
+                start_row = 8
+            
+            # Dynamically detect USN and Name column positions in the survey file
+            survey_usn_col = 2
+            survey_name_col = 3
+            
+            c2_val = sheet_survey.cell(row=start_row, column=2).value
+            c3_val = sheet_survey.cell(row=start_row, column=3).value
+            c2_str = str(c2_val).strip() if c2_val else ""
+            c3_str = str(c3_val).strip() if c3_val else ""
+            
+            def is_usn_like(s):
+                if not s: return False
+                s_clean = s.replace(" ", "")
+                has_digit = any(char.isdigit() for char in s_clean)
+                has_alpha = any(char.isalpha() for char in s_clean)
+                return has_digit and has_alpha and len(s_clean) > 5
+                
+            if is_usn_like(c3_str) and not is_usn_like(c2_str):
+                survey_usn_col = 3
+                survey_name_col = 2
+                
+            # Scan student rows
+            for r in range(start_row, 300):
+                sno = sheet_survey.cell(row=r, column=1).value
+                usn = sheet_survey.cell(row=r, column=survey_usn_col).value
+                name = sheet_survey.cell(row=r, column=survey_name_col).value
+                
+                if sno is None and usn is None and name is None:
+                    lookahead = [sheet_survey.cell(row=r+i, column=1).value for i in range(1, 6)]
+                    if all(x is None for x in lookahead):
+                        break
+                    continue
+                    
+                if usn:
+                    usn_key = str(usn).strip().upper()
+                    ratings = []
+                    for col in range(4, 14):
+                        val = sheet_survey.cell(row=r, column=col).value
+                        if val is not None and val != "":
+                            try:
+                                ratings.append(float(val))
+                            except ValueError:
+                                ratings.append(None)
+                        else:
+                            ratings.append(None)
+                    
+                    survey_data[usn_key] = {
+                        'name': str(name).strip() if name else "",
+                        'ratings': ratings
+                    }
+        except Exception as survey_err:
+            st.warning(f"⚠️ Could not parse the Course Exit Survey file: {survey_err}. The CES sheet will only have the student roster.")
+            survey_data = {}
+
+    # 2. Determine target columns in template workbook
+    t_usn_col = 2
+    t_name_col = 3
+    if course_type == "Lab Course":
+        t_usn_col = 3
+        t_name_col = 2
+        
+    num_students = len(sorted_usns)
+    
+    # 3. Populate student rows in the template's CES sheet (rows 8 to 77)
+    for i in range(70):
+        r = 8 + i
+        if i < num_students:
+            usn = sorted_usns[i]
+            name = master_students[usn]
+            
+            sheet_ces.cell(row=r, column=1).value = float(i + 1)
+            sheet_ces.cell(row=r, column=t_usn_col).value = usn
+            sheet_ces.cell(row=r, column=t_name_col).value = name
+            
+            usn_key = usn.upper()
+            student_survey = None
+            
+            if usn_key in survey_data:
+                student_survey = survey_data[usn_key]
+            else:
+                # Fallback to Name matching
+                name_key = name.strip().lower()
+                for s_usn, s_info in survey_data.items():
+                    if s_info['name'].strip().lower() == name_key:
+                        student_survey = s_info
+                        break
+            
+            if student_survey and student_survey['ratings']:
+                ratings = student_survey['ratings']
+                for idx in range(10):
+                    col = 4 + idx
+                    if idx < len(ratings) and ratings[idx] is not None:
+                        sheet_ces.cell(row=r, column=col).value = ratings[idx]
+                    else:
+                        sheet_ces.cell(row=r, column=col).value = None
+            else:
+                for col in range(4, 14):
+                    sheet_ces.cell(row=r, column=col).value = None
+        else:
+            for col in range(1, 15):
+                sheet_ces.cell(row=r, column=col).value = None
+
+    # 4. Prevent division by zero
+    for col in range(4, 14):
+        if sheet_ces.cell(row=11, column=col).value is None:
+            sheet_ces.cell(row=11, column=col).value = 0
+
 # ----------------- CORE PROCESSING PIPELINE -----------------
 
-def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, aat_file, override_course_code=None):
+def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, aat_file, override_course_code=None, ces_file=None):
     """Fills the Stand Alone Theory sheet cleanly and handles dynamic rosters."""
     wb = load_workbook(io.BytesIO(template_file.read()))
     sheet = wb['Theory'] if 'Theory' in wb.sheetnames else wb.active
@@ -569,12 +706,8 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
         r = 17 + i
         sheet.cell(row=r, column=108).value = "NA"
 
-    # 12. Prevent division by zero in CES survey sheet by initializing row 11 with 0
-    if 'CES' in wb.sheetnames:
-        sheet_ces = wb['CES']
-        for col in range(4, 14): # D to M
-            if sheet_ces.cell(row=11, column=col).value is None:
-                sheet_ces.cell(row=11, column=col).value = 0
+    # 12. Populate and Map Course Exit Survey (CES)
+    populate_ces_sheet(wb, ces_file, master_students, sorted_usns, "Theory Course")
 
     # 13. Prevent division by zero and fill CO-PO-PSO mapping matrix based on Course Code
     if 'CO_PO_PSO_MAPPING' in wb.sheetnames:
@@ -729,7 +862,7 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
     wb.save(out_stream)
     return out_stream.getvalue()
 
-def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_vals, override_course_code=None):
+def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_vals, override_course_code=None, ces_file=None):
     """Fills the Stand Alone Lab sheet cleanly and handles dynamic rosters."""
     import google.generativeai as genai
     import fitz  # PyMuPDF
@@ -981,12 +1114,8 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
                     except ValueError:
                         pass
 
-    # 8. Prevent division by zero in other sheets by initializing unmapped values
-    if 'CES' in wb.sheetnames:
-        sheet_ces = wb['CES']
-        for col in range(4, 14): # D to M
-            if sheet_ces.cell(row=11, column=col).value is None:
-                sheet_ces.cell(row=11, column=col).value = 0
+    # 8. Populate and Map Course Exit Survey (CES)
+    populate_ces_sheet(wb, ces_file, master_students, sorted_usns, "Lab Course")
 
     if 'CO_PO_PSO_MAPPING' in wb.sheetnames:
         sheet_cppm = wb['CO_PO_PSO_MAPPING']
@@ -1158,7 +1287,7 @@ def process_stand_alone_lab(template_file, rubrics_file, api_key, co_vals, po_va
     wb.save(out_stream)
     return out_stream.getvalue()
 
-def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_file, rubrics_file, api_key, co_vals, po_vals, override_course_code=None):
+def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_file, rubrics_file, api_key, co_vals, po_vals, override_course_code=None, ces_file=None):
     """
     Consolidates both Theory assessments and Lab Rubrics VLM extraction
     into the IPCC template workbook (containing both Theory and Lab sheets).
@@ -1586,12 +1715,8 @@ def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_fil
         r = 17 + i
         sheet_theory.cell(row=r, column=108).value = "NA"
 
-    # CES Sheet adjustments
-    if 'CES' in wb.sheetnames:
-        sheet_ces = wb['CES']
-        for col in range(4, 14):
-            if sheet_ces.cell(row=11, column=col).value is None:
-                sheet_ces.cell(row=11, column=col).value = 0
+    # CES Sheet adjustments (Populate and Map Course Exit Survey)
+    populate_ces_sheet(wb, ces_file, master_students, sorted_usns, "IPCC Course")
 
     # Map CO-PO-PSO Matrix
     if 'CO_PO_PSO_MAPPING' in wb.sheetnames:
@@ -1810,12 +1935,17 @@ with st.sidebar:
 
 st.header("2. Upload Assessment Data")
 
+# Define optional CES file upload variables
+theory_ces_file = None
+lab_ces_file = None
+ipcc_ces_file = None
+
 if course_type in ("Theory Course", "IPCC Course"):
     # Render tabs dynamically
     if course_type == "Theory Course":
-        tabs_list = ["📌 CIA-1", "📌 CIA-2", "📌 CIA-3", "📌 Quiz & AAT"]
+        tabs_list = ["📌 CIA-1", "📌 CIA-2", "📌 CIA-3", "📌 Quiz & AAT", "📋 Course Exit Survey"]
     else:
-        tabs_list = ["📌 CIA-1", "📌 CIA-2", "📌 CIA-3", "📌 Quiz & AAT", "📌 Lab Component"]
+        tabs_list = ["📌 CIA-1", "📌 CIA-2", "📌 CIA-3", "📌 Quiz & AAT", "📌 Lab Component", "📋 Course Exit Survey"]
         
     tabs = st.tabs(tabs_list)
 
@@ -1858,6 +1988,16 @@ if course_type in ("Theory Course", "IPCC Course"):
         with col2:
             aat_file = st.file_uploader("AAT Marks (.xls)", type=["xls"], key="aat")
             
+    if course_type == "Theory Course":
+        with tabs[4]:
+            st.subheader("Upload Course Exit Survey Data")
+            theory_ces_file = st.file_uploader(
+                "Upload Course Exit Survey (.xlsx)", 
+                type=["xlsx"], 
+                key="theory_ces",
+                help="Optional Course Exit Survey Excel file."
+            )
+            
     if course_type == "IPCC Course":
         with tabs[4]:
             st.subheader("Configure Lab Mapping Parameters")
@@ -1890,6 +2030,15 @@ if course_type in ("Theory Course", "IPCC Course"):
                 type="password",
                 help="If not set in .env, paste your key here. Leave blank to use the key configured in the .env file."
             )
+            
+        with tabs[5]:
+            st.subheader("Upload Course Exit Survey Data")
+            ipcc_ces_file = st.file_uploader(
+                "Upload Course Exit Survey (.xlsx)", 
+                type=["xlsx"], 
+                key="ipcc_ces",
+                help="Optional Course Exit Survey Excel file."
+            )
 
 else:
     # Lab Course Upload Section
@@ -1913,6 +2062,14 @@ else:
         "Upload Scanned Lab Rubrics PDF (.pdf)",
         type=["pdf"],
         help="Scanned PDF showing student marks for all 12 labs."
+    )
+    
+    st.subheader("Upload Course Exit Survey Data")
+    lab_ces_file = st.file_uploader(
+        "Upload Course Exit Survey (.xlsx)", 
+        type=["xlsx"], 
+        key="lab_ces",
+        help="Optional Course Exit Survey Excel file."
     )
     
     st.subheader("Gemini Vision API Configuration")
@@ -1945,7 +2102,8 @@ if st.button("Generate Consolidated Excel", type="primary"):
                         marks_files,
                         quiz_file,
                         aat_file,
-                        override_course_code=manual_course_code if manual_course_code else None
+                        override_course_code=manual_course_code if manual_course_code else None,
+                        ces_file=theory_ces_file
                     )
                     filename_suggest = "Consolidated_Theory_Scheme.xlsx"
                 elif course_type == "Lab Course":
@@ -1991,7 +2149,8 @@ if st.button("Generate Consolidated Excel", type="primary"):
                         api_key,
                         co_vals,
                         po_vals,
-                        override_course_code=manual_course_code if manual_course_code else None
+                        override_course_code=manual_course_code if manual_course_code else None,
+                        ces_file=lab_ces_file
                     )
                     filename_suggest = "Consolidated_Lab_Scheme.xlsx"
                 else:
@@ -2040,7 +2199,8 @@ if st.button("Generate Consolidated Excel", type="primary"):
                         api_key,
                         co_vals,
                         po_vals,
-                        override_course_code=manual_course_code if manual_course_code else None
+                        override_course_code=manual_course_code if manual_course_code else None,
+                        ces_file=ipcc_ces_file
                     )
                     filename_suggest = "Consolidated_IPCC_Scheme.xlsx"
 
