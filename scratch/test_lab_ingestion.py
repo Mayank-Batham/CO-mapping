@@ -9,15 +9,10 @@ def test_standalone_lab():
     with open("STAND ALONE LAB MARKS.xlsx", "rb") as f:
         marks_bytes = io.BytesIO(f.read())
         
-    co_vals = [1.0] * 12
-    po_vals = [""] * 12
-    
-    # Process
+    # Process without co_vals/po_vals
     out_bytes = process_stand_alone_lab(
         template_file=template_bytes,
         lab_marks_file=marks_bytes,
-        co_vals=co_vals,
-        po_vals=po_vals,
         override_course_code="22AIL35",
         ces_file=None
     )
@@ -30,6 +25,18 @@ def test_standalone_lab():
     # Load and verify
     wb = openpyxl.load_workbook("scratch/output_lab.xlsx", data_only=False)
     sheet = wb['Lab']
+    
+    # Check CO/PO copying (Row 4 is POs, Row 5 is COs)
+    po_d = sheet['D4'].value
+    co_d = sheet['D5'].value
+    po_p = sheet['P4'].value
+    co_p = sheet['P5'].value
+    print(f"Standalone Lab mappings: D4(PO)={po_d}, D5(CO)={co_d}, P4(PO)={po_p}, P5(CO)={co_p}")
+    
+    assert po_d == "0,1,5,0"
+    assert int(co_d) == 1
+    assert po_p == "0,1,2,3,4,5,8,9,10,12,0"
+    assert co_p == "1,2,3,4"
     
     # Check student 1 (Row 9)
     usn = sheet['B9'].value
@@ -85,10 +92,7 @@ def test_ipcc_course():
     qp_files = {1: None, 2: None, 3: None}
     marks_files = {1: m1, 2: m2, 3: m3}
     
-    co_vals = [5.0] * 6
-    po_vals = [""] * 6
-    
-    # Process
+    # Process without co_vals/po_vals
     out_bytes = process_ipcc_course(
         template_file=template_bytes,
         qp_files=qp_files,
@@ -96,8 +100,6 @@ def test_ipcc_course():
         quiz_file=mq,
         aat_file=ma,
         lab_marks_file=marks_bytes,
-        co_vals=co_vals,
-        po_vals=po_vals,
         override_course_code="22AI51",
         ces_file=None
     )
@@ -110,6 +112,13 @@ def test_ipcc_course():
     # Load and verify
     wb = openpyxl.load_workbook("scratch/output_ipcc.xlsx", data_only=False)
     sheet = wb['Lab']
+    
+    # Check CO/PO copying (Row 4 is POs, Row 5 is COs)
+    po_d = sheet['D4'].value
+    co_d = sheet['D5'].value
+    print(f"IPCC Lab mappings: D4(PO)={po_d}, D5(CO)={co_d}")
+    assert po_d == "0,1,2,3,5,8,11,0"
+    assert int(co_d) == 5
     
     # Check student 1 (Row 9)
     usn = sheet['B9'].value

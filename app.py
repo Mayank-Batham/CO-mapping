@@ -460,6 +460,8 @@ def extract_lab_marks_from_excel(file_stream, num_marks_cols):
     """
     Parses a filled Lab Excel sheet.
     Returns:
+        co_vals: list of CO values
+        po_vals: list of PO values
         students_data: dict mapping USN -> {
             'name': str,
             'marks': list of floats/ints/None,
@@ -499,6 +501,13 @@ def extract_lab_marks_from_excel(file_stream, num_marks_cols):
         header_row_idx = 8
         usn_col_idx = 2
         name_col_idx = 3
+        
+    # Read COs (Row 5) and POs (Row 4) for columns 4 to 4 + num_marks_cols - 1
+    co_vals = []
+    po_vals = []
+    for col in range(4, 4 + num_marks_cols):
+        co_vals.append(sheet.cell(row=5, column=col).value)
+        po_vals.append(sheet.cell(row=4, column=col).value)
         
     students_data = {}
     max_row = sheet.max_row
@@ -543,7 +552,7 @@ def extract_lab_marks_from_excel(file_stream, num_marks_cols):
                 'grade': grade
             }
             
-    return students_data
+    return co_vals, po_vals, students_data
 
 # ----------------- CORE PROCESSING PIPELINE -----------------
 
@@ -937,7 +946,7 @@ def process_stand_alone_theory(template_file, qp_files, marks_files, quiz_file, 
     wb.save(out_stream)
     return out_stream.getvalue()
 
-def process_stand_alone_lab(template_file, lab_marks_file, co_vals, po_vals, override_course_code=None, ces_file=None):
+def process_stand_alone_lab(template_file, lab_marks_file, override_course_code=None, ces_file=None):
     """Fills the Stand Alone Lab sheet cleanly and handles dynamic rosters."""
     import io
     
@@ -963,7 +972,7 @@ def process_stand_alone_lab(template_file, lab_marks_file, co_vals, po_vals, ove
         
     # 2. Extract marks from filled Lab Excel file
     try:
-        extracted_marks_map = extract_lab_marks_from_excel(lab_marks_file, num_marks_cols=13)
+        co_vals, po_vals, extracted_marks_map = extract_lab_marks_from_excel(lab_marks_file, num_marks_cols=13)
     except Exception as e:
         raise ValueError(f"Failed to read lab marks Excel sheet: {e}")
 
@@ -1013,17 +1022,17 @@ def process_stand_alone_lab(template_file, lab_marks_file, co_vals, po_vals, ove
                 sheet_theory.cell(row=r, column=c).value = None
 
     # 5. Fill COs and POs mapped in Lab sheet
-    # Row 4 is POs Mapped, Row 5 is COs mapped. Columns D to O (4 to 15)
-    for idx in range(12):
+    # Row 4 is POs Mapped, Row 5 is COs mapped. Columns D to P (4 to 16)
+    for idx in range(13):
         col = 4 + idx
-        if idx < len(po_vals) and po_vals[idx]:
+        if idx < len(po_vals) and po_vals[idx] is not None:
             sheet.cell(row=4, column=col).value = po_vals[idx]
         if idx < len(co_vals) and co_vals[idx] is not None:
             sheet.cell(row=5, column=col).value = co_vals[idx]
 
-    # Clear marks columns in Lab sheet (columns D to O, rows 9 to 9 + N - 1) before filling
+    # Clear marks columns in Lab sheet (columns D to P, rows 9 to 9 + N - 1) before filling
     for r in range(9, 9 + num_students):
-        for c in range(4, 16):
+        for c in range(4, 17):
             sheet.cell(row=r, column=c).value = None
 
     # 6. Write Marks and Formulas to Lab Sheet
@@ -1236,7 +1245,7 @@ def process_stand_alone_lab(template_file, lab_marks_file, co_vals, po_vals, ove
     wb.save(out_stream)
     return out_stream.getvalue()
 
-def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_file, lab_marks_file, co_vals, po_vals, override_course_code=None, ces_file=None):
+def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_file, lab_marks_file, override_course_code=None, ces_file=None):
     """
     Consolidates both Theory assessments and Lab Marks from filled Excel
     into the IPCC template workbook (containing both Theory and Lab sheets).
@@ -1254,11 +1263,13 @@ def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_fil
     
     # 2. Ingest Lab Marks from filled Excel if provided (6 labs)
     extracted_marks_map = {}
+    co_vals = []
+    po_vals = []
     course_code = override_course_code
     
     if lab_marks_file:
         try:
-            extracted_marks_map = extract_lab_marks_from_excel(lab_marks_file, num_marks_cols=6)
+            co_vals, po_vals, extracted_marks_map = extract_lab_marks_from_excel(lab_marks_file, num_marks_cols=6)
         except Exception as e:
             raise ValueError(f"Failed to read lab marks Excel sheet: {e}")
 
@@ -1488,7 +1499,7 @@ def process_ipcc_course(template_file, qp_files, marks_files, quiz_file, aat_fil
     # Fill COs and POs mapped in Lab sheet (Row 4 is POs, Row 5 is COs, Cols D to I)
     for idx in range(6):
         col = 4 + idx
-        if idx < len(po_vals) and po_vals[idx]:
+        if idx < len(po_vals) and po_vals[idx] is not None:
             sheet_lab.cell(row=4, column=col).value = po_vals[idx]
         if idx < len(co_vals) and co_vals[idx] is not None:
             sheet_lab.cell(row=5, column=col).value = co_vals[idx]
@@ -1757,8 +1768,6 @@ if course_type in ("Theory Course", "IPCC Course"):
     aat_file = None
     
     # Lab defaults (IPCC)
-    co_input = "1, 1, 1, 2, 2, 2"
-    po_input = "1,5; 1,5; 1,5; 2,5; 2,5; 2,5"
     lab_marks_file = None
 
     with tabs[0]:
@@ -1791,21 +1800,6 @@ if course_type in ("Theory Course", "IPCC Course"):
             
     if course_type == "IPCC Course":
         with tabs[4]:
-            st.subheader("Configure Lab Mapping Parameters")
-            col_co, col_po = st.columns(2)
-            with col_co:
-                co_input = st.text_input(
-                    "Lab CO Mappings (Row 5)", 
-                    value="1, 1, 1, 2, 2, 2",
-                    help="Enter exactly 6 CO values separated by commas for columns D to I."
-                )
-            with col_po:
-                po_input = st.text_input(
-                    "Lab PO Mappings (Row 4)", 
-                    value="1,5; 1,5; 1,5; 2,5; 2,5; 2,5",
-                    help="Enter PO mappings for each lab. Separate labs with a semicolon (;) and PO numbers with commas (,)."
-                )
-                
             st.subheader("Upload Filled Lab Marks Sheet")
             lab_marks_file = st.file_uploader(
                 "Upload Filled Lab Marks Sheet (.xlsx)",
@@ -1825,21 +1819,6 @@ if course_type in ("Theory Course", "IPCC Course"):
 
 else:
     # Lab Course Upload Section
-    st.subheader("Configure Lab Mapping Parameters")
-    col_co, col_po = st.columns(2)
-    with col_co:
-        co_input = st.text_input(
-            "Lab CO Mappings (Row 5)", 
-            value="1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4",
-            help="Enter exactly 12 CO values separated by commas for columns D to O."
-        )
-    with col_po:
-        po_input = st.text_input(
-            "Lab PO Mappings (Row 4)", 
-            value="1,5; 1,5; 1,5; 2,5; 2,5; 2,5; 3,5; 3,5; 3,5; 4,5; 4,5; 4,5",
-            help="Enter PO mappings for each lab. Separate labs with a semicolon (;) and PO numbers with commas (,). We format it automatically."
-        )
-        
     st.subheader("Upload Filled Lab Marks Sheet")
     lab_marks_file = st.file_uploader(
         "Upload Filled Lab Marks Sheet (.xlsx)",
@@ -1881,79 +1860,15 @@ if st.button("Generate Consolidated Excel", type="primary"):
                     )
                     filename_suggest = "Consolidated_Theory_Scheme.xlsx"
                 elif course_type == "Lab Course":
-                    # Parse CO values
-                    co_vals = []
-                    for val in co_input.split(","):
-                        val_str = val.strip()
-                        if val_str:
-                            try:
-                                co_vals.append(float(val_str))
-                            except ValueError:
-                                co_vals.append(val_str)
-                    
-                    if len(co_vals) != 12:
-                        st.warning(f"Note: You entered {len(co_vals)} CO values. Padded with defaults to make 12.")
-                        co_vals = (co_vals + [1.0]*12)[:12]
-
-                    # Parse PO values
-                    raw_po_groups = po_input.split(";")
-                    po_vals = []
-                    for grp in raw_po_groups:
-                        grp = grp.strip()
-                        if grp:
-                            digits = [d.strip() for d in grp.split(",") if d.strip().isdigit()]
-                            if digits:
-                                po_vals.append("0," + ",".join(digits) + ",0")
-                            else:
-                                po_vals.append("")
-                        else:
-                            po_vals.append("")
-                    
-                    if len(po_vals) != 12:
-                        st.warning(f"Note: You entered {len(po_vals)} PO groups. Padded with defaults to make 12.")
-                        po_vals = (po_vals + [""]*12)[:12]
-
                     out_bytes = process_stand_alone_lab(
                         template_file,
                         lab_marks_file,
-                        co_vals,
-                        po_vals,
                         override_course_code=manual_course_code if manual_course_code else None,
                         ces_file=ces_file
                     )
                     filename_suggest = "Consolidated_Lab_Scheme.xlsx"
                 else:
                     # IPCC Course
-                    # Parse CO values (6 values)
-                    co_vals = []
-                    for val in co_input.split(","):
-                        val_str = val.strip()
-                        if val_str:
-                            try:
-                                co_vals.append(float(val_str))
-                            except ValueError:
-                                co_vals.append(val_str)
-                    if len(co_vals) != 6:
-                        st.warning(f"Note: You entered {len(co_vals)} CO values. Padded with defaults to make 6.")
-                        co_vals = (co_vals + [1.0]*6)[:6]
-
-                    # Parse PO values (6 groups)
-                    raw_po_groups = po_input.split(";")
-                    po_vals = []
-                    for grp in raw_po_groups:
-                        grp = grp.strip()
-                        if grp:
-                            digits = [d.strip() for d in grp.split(",") if d.strip().isdigit()]
-                            if digits:
-                                po_vals.append("0," + ",".join(digits) + ",0")
-                            else:
-                                po_vals.append("")
-                        else:
-                            po_vals.append("")
-                    if len(po_vals) != 6:
-                        st.warning(f"Note: You entered {len(po_vals)} PO groups. Padded with defaults to make 6.")
-                        po_vals = (po_vals + [""]*6)[:6]
-
                     out_bytes = process_ipcc_course(
                         template_file,
                         qp_files,
@@ -1961,8 +1876,6 @@ if st.button("Generate Consolidated Excel", type="primary"):
                         quiz_file,
                         aat_file,
                         lab_marks_file,
-                        co_vals,
-                        po_vals,
                         override_course_code=manual_course_code if manual_course_code else None,
                         ces_file=ces_file
                     )
