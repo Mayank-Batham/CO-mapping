@@ -335,140 +335,126 @@ def extract_metadata(file_stream):
 
 def populate_ces_sheet(wb, ces_file, master_students, sorted_usns, course_type):
     """
-    Populates the 'CES' sheet of the workbook with the student roster and ratings.
-    If ces_file is provided, student ratings are extracted and written.
+    Populates all worksheets containing 'CES' in their names in the workbook.
+    If ces_file is provided, it reads the student rows sequentially from the survey file
+    and writes them directly (replacing the sheet contents) to preserve formatting and formulas.
     Otherwise, only the student roster is updated.
     """
-    if 'CES' not in wb.sheetnames:
-        return
-    
-    sheet_ces = wb['CES']
-    
-    # 1. Parse survey responses if survey file is uploaded
-    survey_data = {}
-    if ces_file:
-        try:
-            ces_file.seek(0)
-            wb_survey = load_workbook(io.BytesIO(ces_file.read()), data_only=True)
-            sheet_survey = wb_survey['CES'] if 'CES' in wb_survey.sheetnames else wb_survey.active
-            
-            # Find the starting row of student records in the survey
-            start_row = None
-            for r in range(1, 25):
-                c1 = sheet_survey.cell(row=r, column=1).value
-                c2 = sheet_survey.cell(row=r, column=2).value
-                if c1 in (1, 1.0) or (c2 and isinstance(c2, str) and re.match(r'^[a-zA-Z0-9]+$', c2.strip())):
-                    start_row = r
-                    break
-            
-            if start_row is None:
-                start_row = 8
-            
-            # Dynamically detect USN and Name column positions in the survey file
-            survey_usn_col = 2
-            survey_name_col = 3
-            
-            c2_val = sheet_survey.cell(row=start_row, column=2).value
-            c3_val = sheet_survey.cell(row=start_row, column=3).value
-            c2_str = str(c2_val).strip() if c2_val else ""
-            c3_str = str(c3_val).strip() if c3_val else ""
-            
-            def is_usn_like(s):
-                if not s: return False
-                s_clean = s.replace(" ", "")
-                has_digit = any(char.isdigit() for char in s_clean)
-                has_alpha = any(char.isalpha() for char in s_clean)
-                return has_digit and has_alpha and len(s_clean) > 5
-                
-            if is_usn_like(c3_str) and not is_usn_like(c2_str):
-                survey_usn_col = 3
-                survey_name_col = 2
-                
-            # Scan student rows
-            for r in range(start_row, 300):
-                sno = sheet_survey.cell(row=r, column=1).value
-                usn = sheet_survey.cell(row=r, column=survey_usn_col).value
-                name = sheet_survey.cell(row=r, column=survey_name_col).value
-                
-                if sno is None and usn is None and name is None:
-                    lookahead = [sheet_survey.cell(row=r+i, column=1).value for i in range(1, 6)]
-                    if all(x is None for x in lookahead):
-                        break
-                    continue
-                    
-                if usn:
-                    usn_key = str(usn).strip().upper()
-                    ratings = []
-                    for col in range(4, 14):
-                        val = sheet_survey.cell(row=r, column=col).value
-                        if val is not None and val != "":
-                            try:
-                                ratings.append(float(val))
-                            except ValueError:
-                                ratings.append(None)
-                        else:
-                            ratings.append(None)
-                    
-                    survey_data[usn_key] = {
-                        'name': str(name).strip() if name else "",
-                        'ratings': ratings
-                    }
-        except Exception as survey_err:
-            st.warning(f"⚠️ Could not parse the Course Exit Survey file: {survey_err}. The CES sheet will only have the student roster.")
-            survey_data = {}
-
-    # 2. Determine target columns in template workbook
-    t_usn_col = 2
-    t_name_col = 3
-    if course_type == "Lab Course":
-        t_usn_col = 3
-        t_name_col = 2
-        
     num_students = len(sorted_usns)
     
-    # 3. Populate student rows in the template's CES sheet (rows 8 to 77)
-    for i in range(70):
-        r = 8 + i
-        if i < num_students:
-            usn = sorted_usns[i]
-            name = master_students[usn]
+    # Iterate over all sheets in the workbook and fill any sheet matching 'ces' (case-insensitive)
+    for sheet_name in wb.sheetnames:
+        if 'ces' in sheet_name.lower():
+            sheet_ces = wb[sheet_name]
             
-            sheet_ces.cell(row=r, column=1).value = float(i + 1)
-            sheet_ces.cell(row=r, column=t_usn_col).value = usn
-            sheet_ces.cell(row=r, column=t_name_col).value = name
-            
-            usn_key = usn.upper()
-            student_survey = None
-            
-            if usn_key in survey_data:
-                student_survey = survey_data[usn_key]
+            # Determine target columns in template workbook
+            t_usn_col = 2
+            t_name_col = 3
+            if course_type == "Lab Course":
+                t_usn_col = 3
+                t_name_col = 2
+                
+            if ces_file:
+                # Sequential Copy mode: read rows from survey file and write directly
+                try:
+                    ces_file.seek(0)
+                    wb_survey = load_workbook(io.BytesIO(ces_file.read()), data_only=True)
+                    sheet_survey = wb_survey['CES'] if 'CES' in wb_survey.sheetnames else wb_survey.active
+                    
+                    # Find start row in survey file
+                    start_row = None
+                    for r in range(1, 25):
+                        c1 = sheet_survey.cell(row=r, column=1).value
+                        c2 = sheet_survey.cell(row=r, column=2).value
+                        if c1 in (1, 1.0) or (c2 and isinstance(c2, str) and re.match(r'^[a-zA-Z0-9]+$', c2.strip())):
+                            start_row = r
+                            break
+                    
+                    if start_row is None:
+                        start_row = 8
+                        
+                    # Detect USN and Name column positions in the survey file
+                    survey_usn_col = 2
+                    survey_name_col = 3
+                    c2_val = sheet_survey.cell(row=start_row, column=2).value
+                    c3_val = sheet_survey.cell(row=start_row, column=3).value
+                    c2_str = str(c2_val).strip() if c2_val else ""
+                    c3_str = str(c3_val).strip() if c3_val else ""
+                    
+                    def is_usn_like(s):
+                        if not s: return False
+                        s_clean = s.replace(" ", "")
+                        has_digit = any(char.isdigit() for char in s_clean)
+                        has_alpha = any(char.isalpha() for char in s_clean)
+                        return has_digit and has_alpha and len(s_clean) > 5
+                        
+                    if is_usn_like(c3_str) and not is_usn_like(c2_str):
+                        survey_usn_col = 3
+                        survey_name_col = 2
+                        
+                    # Copy rows sequentially
+                    write_row = 8
+                    for r in range(start_row, 300):
+                        sno = sheet_survey.cell(row=r, column=1).value
+                        usn = sheet_survey.cell(row=r, column=survey_usn_col).value
+                        name = sheet_survey.cell(row=r, column=survey_name_col).value
+                        
+                        if sno is None and usn is None and name is None:
+                            lookahead = [sheet_survey.cell(row=r+i, column=1).value for i in range(1, 6)]
+                            if all(x is None for x in lookahead):
+                                break
+                            continue
+                            
+                        # Write to template CES sheet
+                        sheet_ces.cell(row=write_row, column=1).value = float(write_row - 7)
+                        sheet_ces.cell(row=write_row, column=t_usn_col).value = usn
+                        sheet_ces.cell(row=write_row, column=t_name_col).value = name
+                        
+                        # Copy ratings
+                        for col in range(4, 14):
+                            val = sheet_survey.cell(row=r, column=col).value
+                            if val is not None and val != "":
+                                try:
+                                    sheet_ces.cell(row=write_row, column=col).value = float(val)
+                                except ValueError:
+                                    sheet_ces.cell(row=write_row, column=col).value = val
+                            else:
+                                sheet_ces.cell(row=write_row, column=col).value = None
+                        
+                        write_row += 1
+                        if write_row > 77:
+                            break
+                            
+                    # Clear remaining rows up to 77
+                    for r in range(write_row, 78):
+                        for col in range(1, 15):
+                            sheet_ces.cell(row=r, column=col).value = None
+                            
+                except Exception as e_copy:
+                    st.warning(f"⚠️ Failed to copy survey sheet sequentially: {e_copy}")
+                    
             else:
-                # Fallback to Name matching
-                name_key = name.strip().lower()
-                for s_usn, s_info in survey_data.items():
-                    if s_info['name'].strip().lower() == name_key:
-                        student_survey = s_info
-                        break
-            
-            if student_survey and student_survey['ratings']:
-                ratings = student_survey['ratings']
-                for idx in range(10):
-                    col = 4 + idx
-                    if idx < len(ratings) and ratings[idx] is not None:
-                        sheet_ces.cell(row=r, column=col).value = ratings[idx]
+                # No survey uploaded: write roster with empty ratings
+                for i in range(70):
+                    r = 8 + i
+                    if i < num_students:
+                        usn = sorted_usns[i]
+                        name = master_students[usn]
+                        
+                        sheet_ces.cell(row=r, column=1).value = float(i + 1)
+                        sheet_ces.cell(row=r, column=t_usn_col).value = usn
+                        sheet_ces.cell(row=r, column=t_name_col).value = name
+                        
+                        for col in range(4, 14):
+                            sheet_ces.cell(row=r, column=col).value = None
                     else:
-                        sheet_ces.cell(row=r, column=col).value = None
-            else:
-                for col in range(4, 14):
-                    sheet_ces.cell(row=r, column=col).value = None
-        else:
-            for col in range(1, 15):
-                sheet_ces.cell(row=r, column=col).value = None
+                        for col in range(1, 15):
+                            sheet_ces.cell(row=r, column=col).value = None
 
-    # 4. Prevent division by zero
-    for col in range(4, 14):
-        if sheet_ces.cell(row=11, column=col).value is None:
-            sheet_ces.cell(row=11, column=col).value = 0
+            # Prevent division by zero
+            for col in range(4, 14):
+                if sheet_ces.cell(row=11, column=col).value is None:
+                    sheet_ces.cell(row=11, column=col).value = 0
 
 # ----------------- CORE PROCESSING PIPELINE -----------------
 
