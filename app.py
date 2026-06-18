@@ -350,7 +350,7 @@ def populate_ces_sheet(wb, ces_file, master_students, sorted_usns, course_type):
             # Determine target columns in template workbook
             t_usn_col = 2
             t_name_col = 3
-            if course_type == "Lab Course":
+            if course_type in ("Lab Course", "IPCC Course"):
                 t_usn_col = 3
                 t_name_col = 2
                 
@@ -1406,8 +1406,8 @@ def process_stand_alone_lab(template_file, lab_marks_file=None, rubrics_file=Non
             for c in range(1, sheet_cia.max_column + 1):
                 sheet_cia.cell(row=r, column=c).value = None
 
-    # Clear Quiz1 / Quiz2 / CES sheets for lab course to avoid division by zero
-    for q_sheet_name in ['Quiz1', 'Quiz2', 'CES']:
+    # Clear Quiz1 / Quiz2 sheets for lab course to avoid division by zero
+    for q_sheet_name in ['Quiz1', 'Quiz2']:
         if q_sheet_name in wb.sheetnames:
             q_sheet = wb[q_sheet_name]
             for r in range(9, 74):
